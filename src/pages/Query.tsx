@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { queryWithSSE } from '../sse';
 import { listDocuments } from '../api';
-import type { QueryFinalResponse, DebugInfo } from '../contracts/types';
+import type { QueryFinalResponse, DebugInfo, DocumentRecord } from '../contracts/types';
+import { getSelectedDocIds } from '../utils/documentSelection';
 import EvidencePanel from './EvidencePanel';
-import DemoModePanel from './DemoModePanel';
 import DebugDrawer from './DebugDrawer';
 import './Query.css';
 
@@ -25,6 +25,8 @@ export default function Query() {
   const [hasPendingDocs, setHasPendingDocs] = useState(false);
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
   const [lastQuery, setLastQuery] = useState<string>('');
+  const [selectedDocIds, setSelectedDocIds] = useState<number[]>(() => getSelectedDocIds());
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const abortRef = useRef<(() => void) | null>(null);
 
   // Readiness check: fetch documents on mount and check for pending status
@@ -47,12 +49,16 @@ export default function Query() {
         };
         
         setHasPendingDocs(pending);
+        setDocuments(response.documents);
       } catch (err) {
         console.error('Failed to check document readiness:', err);
       }
     };
 
     checkReadiness();
+    
+    // Refresh selected doc IDs when page loads (in case changed on Docs page)
+    setSelectedDocIds(getSelectedDocIds());
   }, []);
 
   const executeQuery = (questionText: string) => {
@@ -65,13 +71,17 @@ export default function Query() {
     setError(null);
     setLastQuery(questionText.trim()); // Store for retry
 
+    // Build query request with optional doc_ids filter
+    const queryRequest = {
+      question: questionText.trim(),
+      mode: 'full' as const,
+      top_k: 4,
+      debug: debugDrawerOpen ? 2 : 0, // Enable verbose debug when drawer is open
+      ...(selectedDocIds.length > 0 && { doc_ids: selectedDocIds }), // Only include if specific docs selected
+    };
+
     const { abort } = queryWithSSE(
-      {
-        question: questionText.trim(),
-        mode: 'full',
-        top_k: 4,
-        debug: debugDrawerOpen ? 2 : 0, // Enable verbose debug when drawer is open
-      },
+      queryRequest,
       {
         onDebug: (debug) => {
           setDebugInfo(debug);
@@ -132,13 +142,33 @@ export default function Query() {
     setTimeout(() => executeQuery(demoQuestion), 100);
   };
 
+  // Get scope display text
+  const getScopeText = () => {
+    if (selectedDocIds.length === 0) {
+      return 'All docs';
+    }
+    const selectedDocs = documents.filter(d => selectedDocIds.includes(d.id));
+    if (selectedDocs.length === 1) {
+      return selectedDocs[0].filename;
+    }
+    return `${selectedDocs.length} documents`;
+  };
+
   // Extract request_id from debug info or final response
   const requestId = debugInfo?.request_id || finalResponse?.debug_info?.request_id;
 
   return (
     <div className="query-page">
       <div className="query-container">
-        <h1>RAG Query</h1>
+        <div className="page-guidance">
+          <div className="step-header">
+            <span className="step-badge">Step 2 of 2</span>
+            <h1>Ask Questions</h1>
+          </div>
+          <p className="step-description">
+            Ask questions about your uploaded documents. The AI will search your knowledge base and provide answers with sources.
+          </p>
+        </div>
 
         {/* Readiness Banner - Show if documents are still indexing */}
         {hasPendingDocs && (
@@ -149,44 +179,68 @@ export default function Query() {
           </div>
         )}
 
-        {/* Demo Mode Panel */}
+        {/* Demo Mode: Try demo questions */}
         {DEMO_MODE && (
-          <DemoModePanel
-            onRunDemo={runDemoQuery}
-            onClear={handleClear}
-            disabled={streaming}
-          />
+          <div className="demo-questions-card">
+            <h3>✨ Try demo questions</h3>
+            <div className="demo-buttons">
+              <button
+                onClick={() => runDemoQuery("What are the main security protocols?")}
+                disabled={streaming}
+                className="demo-question-btn"
+              >
+                What are the main security protocols?
+              </button>
+              <button
+                onClick={() => runDemoQuery("Explain the data retention policy")}
+                disabled={streaming}
+                className="demo-question-btn"
+              >
+                Explain the data retention policy
+              </button>
+            </div>
+          </div>
         )}
 
-        <form onSubmit={handleQuery} className="query-form">
-          <div className="form-group">
-            <label htmlFor="question">Ask a question about your documents</label>
-            <textarea
-              id="question"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="What is the company vacation policy?"
-              rows={4}
-              disabled={streaming}
-              required
-            />
-          </div>
-          <div className="button-group">
-            <button type="submit" disabled={streaming || !question.trim()} className="query-button">
-              {streaming ? 'Querying...' : 'Ask'}
-            </button>
-            {streaming && (
-              <button type="button" onClick={handleCancel} className="cancel-button">
-                Cancel
+        {/* Top Section: Question Input */}
+        <div className="query-input-card">
+          <form onSubmit={handleQuery} className="query-form">
+            <div className="form-group">
+              <label htmlFor="question">Your Question</label>
+              <textarea
+                id="question"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="What is the company vacation policy?"
+                rows={3}
+                disabled={streaming}
+                required
+              />
+            </div>
+            <div className="button-group">
+              <button type="submit" disabled={streaming || !question.trim()} className="ask-button">
+                {streaming ? 'Asking...' : 'Ask'}
               </button>
-            )}
-            {(question || answer || finalResponse || error) && !streaming && (
-              <button type="button" onClick={handleClear} className="clear-button">
-                Clear
-              </button>
-            )}
-          </div>
-        </form>
+              {streaming && (
+                <button type="button" onClick={handleCancel} className="cancel-button">
+                  Cancel
+                </button>
+              )}
+              {(question || answer || finalResponse || error) && !streaming && (
+                <button type="button" onClick={handleClear} className="clear-button">
+                  Clear
+                </button>
+              )}
+            </div>
+          </form>
+        </div>
+
+        {/* Document Scope Indicator */}
+        <div className="scope-indicator">
+          <span className="scope-label">Scope:</span>
+          <span className="scope-value">{getScopeText()}</span>
+          <Link to="/docs" className="scope-link">Change →</Link>
+        </div>
 
         {requestId && (
           <div className="request-id">
@@ -210,40 +264,47 @@ export default function Query() {
           </div>
         )}
 
-        {debugInfo && (
-          <div className="debug-info">
-            <strong>Debug Info:</strong> {debugInfo.evidence_count} evidence chunks,{' '}
-            {debugInfo.sources_count} sources
-          </div>
-        )}
-
+        {/* Middle & Right: Answer and Evidence */}
         {(answer || finalResponse) && (
-          <div className="answer-section">
-            <h2>Answer</h2>
-            
-            {finalResponse?.refused && (
-              <div className="refusal-banner">
-                <div className="refusal-title">⚠ Answer not found in uploaded documents</div>
-                {finalResponse.refusal_reason && (
-                  <div className="refusal-reason">
-                    Reason: {finalResponse.refusal_reason}
-                  </div>
-                )}
-              </div>
-            )}
+          <div className="results-grid">
+            {/* Middle: Answer Panel */}
+            <div className="answer-panel">
+              <h2>Answer</h2>
+              
+              {/* Refusal Banner */}
+              {finalResponse?.refused && (
+                <div className="refusal-banner">
+                  <div className="refusal-title">⚠️ Answer not found in uploaded documents</div>
+                  {finalResponse.refusal_reason && (
+                    <div className="refusal-reason">
+                      Reason: {finalResponse.refusal_reason}
+                    </div>
+                  )}
+                </div>
+              )}
 
-            <div className="answer-content">
-              {finalResponse?.answer || answer}
-              {streaming && <span className="cursor">▊</span>}
+              <div className="answer-content">
+                {finalResponse?.answer || answer}
+                {streaming && <span className="cursor">▊</span>}
+              </div>
+
+              {debugInfo && (
+                <div className="debug-info">
+                  <strong>Debug:</strong> {debugInfo.evidence_count} evidence chunks, {debugInfo.sources_count} sources
+                </div>
+              )}
             </div>
 
-            {finalResponse && (
-              <EvidencePanel 
-                evidence={finalResponse.evidence} 
-                query={question}
-                refused={finalResponse.refused}
-                sources={finalResponse.sources}
-              />
+            {/* Right/Below: Evidence Panel (hide if refused) */}
+            {finalResponse && !finalResponse.refused && (
+              <div className="evidence-panel-container">
+                <EvidencePanel 
+                  evidence={finalResponse.evidence} 
+                  query={question}
+                  refused={finalResponse.refused}
+                  sources={finalResponse.sources}
+                />
+              </div>
             )}
           </div>
         )}

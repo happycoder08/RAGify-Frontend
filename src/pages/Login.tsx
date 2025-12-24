@@ -30,7 +30,11 @@ export default function Login() {
   return (
     <div className="login-page">
       <div className="login-container">
-        <h1>RAGify Login</h1>
+        <div className="login-brand">
+          <span className="logo">🔍</span>
+          <h1>RAGify</h1>
+        </div>
+        <p className="login-subtitle">Sign in to query your documents with grounded answers.</p>
         <form onSubmit={handleSubmit} className="login-form">
           <div className="form-group">
             <label htmlFor="username">Username</label>
@@ -61,6 +65,10 @@ export default function Login() {
             {loading ? 'Logging in...' : 'Login'}
           </button>
         </form>
+        <p className="helper-text">
+          <span className="helper-icon">ℹ️</span>
+          Demo credentials available from your admin
+        </p>
       </div>
     </div>
   );

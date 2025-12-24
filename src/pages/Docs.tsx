@@ -1,32 +1,49 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { listDocuments, uploadDocuments } from '../api';
 import type { DocumentRecord } from '../contracts/types';
+import { getSelectedDocIds, toggleDocId, clearSelection } from '../utils/documentSelection';
 import './Docs.css';
 
 export default function Docs() {
+  const navigate = useNavigate();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [pollingTimeoutReached, setPollingTimeoutReached] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+  const [selectedDocs, setSelectedDocs] = useState<number[]>(() => getSelectedDocIds());
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingIntervalRef = useRef<number | null>(null);
   const pollingStartTimeRef = useRef<number | null>(null);
 
   // Fetch documents
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (showLoading = true) => {
+    if (showLoading) {
+      setFetching(true);
+    }
     try {
       const response = await listDocuments();
       setDocuments(response.documents);
       setError(null);
+      setLastRefreshed(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load documents');
     } finally {
       setLoading(false);
+      setFetching(false);
     }
+  };
+
+  // Manual refresh handler
+  const handleRefresh = () => {
+    fetchDocuments(true);
   };
 
   // Check if polling is needed
@@ -70,7 +87,7 @@ export default function Docs() {
             setPollingTimeoutReached(true);
             pollingStartTimeRef.current = null;
           } else {
-            fetchDocuments();
+            fetchDocuments(false);
           }
         }, 2000);
       } else {
@@ -102,18 +119,25 @@ export default function Docs() {
 
     setUploading(true);
     setUploadError(null);
+    setUploadSuccess(null);
 
     try {
       const fileArray = Array.from(files);
-      await uploadDocuments(fileArray);
+      const result = await uploadDocuments(fileArray);
       
-      // Refresh document list
-      await fetchDocuments();
+      const uploadedCount = result.files_processed || 0;
+      setUploadSuccess(`Successfully uploaded ${uploadedCount} file${uploadedCount !== 1 ? 's' : ''}`);
+      
+      // Immediately re-fetch documents
+      await fetchDocuments(false);
       
       // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+      
+      // Clear success message after 5 seconds
+      setTimeout(() => setUploadSuccess(null), 5000);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed');
     } finally {
@@ -149,9 +173,33 @@ export default function Docs() {
     }
   };
 
+  // Handle document selection toggle
+  const handleToggleDoc = (docId: number) => {
+    const newSelection = toggleDocId(docId);
+    setSelectedDocs(newSelection);
+  };
+
+  // Handle select/deselect all
+  const handleToggleAll = () => {
+    const indexedDocs = documents.filter(d => d.status === 'indexed');
+    if (selectedDocs.length === indexedDocs.length && indexedDocs.length > 0) {
+      // Deselect all
+      clearSelection();
+      setSelectedDocs([]);
+    } else {
+      // Select all indexed
+      const allIndexedIds = indexedDocs.map(d => d.id);
+      setSelectedDocs(allIndexedIds);
+      import('../utils/documentSelection').then(({ setSelectedDocIds }) => {
+        setSelectedDocIds(allIndexedIds);
+      });
+    }
+  };
+
   // Determine banner message
   const isPolling = shouldPoll(documents);
   const hasIndexedDocs = documents.some(doc => doc.status === 'indexed');
+  const isActive = uploading || fetching;
   
   let bannerMessage = '';
   let bannerClass = '';
@@ -159,10 +207,10 @@ export default function Docs() {
   if (isPolling) {
     bannerMessage = pollingTimeoutReached 
       ? 'Indexing is taking longer than expected. Documents may still be processing.'
-      : 'Indexing in progress...';
+      : 'Indexing documents...';
     bannerClass = 'banner-indexing';
   } else if (hasIndexedDocs) {
-    bannerMessage = 'Ready to query';
+    bannerMessage = '✓ Ready to query';
     bannerClass = 'banner-ready';
   }
 
@@ -177,85 +225,197 @@ export default function Docs() {
 
   return (
     <div className="docs-page">
-      {bannerMessage && (
-        <div className={`banner ${bannerClass}`}>
-          {bannerMessage}
-        </div>
-      )}
-
       <div className="docs-content">
-        <h1>Documents</h1>
-
-        {/* Upload Section */}
-        <div className="upload-section">
-          <div
-            className={`upload-area ${dragActive ? 'drag-active' : ''}`}
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              onChange={(e) => handleUpload(e.target.files)}
-              className="file-input"
-              id="file-upload"
-            />
-            <label htmlFor="file-upload" className="upload-label">
-              {uploading ? (
-                'Uploading...'
-              ) : (
-                <>
-                  <span className="upload-icon">📁</span>
-                  <span>Click to select files or drag & drop</span>
-                </>
-              )}
-            </label>
+        <div className="page-guidance">
+          <div className="step-header">
+            <span className="step-badge">Step 1 of 2</span>
+            <h1>Upload Documents</h1>
           </div>
-          {uploadError && <div className="error-message">{uploadError}</div>}
+          <p className="step-description">
+            Upload your documents to build your knowledge base. Once indexed, you can ask questions in the Chat.
+          </p>
         </div>
 
-        {/* Documents Table */}
-        {loading && documents.length === 0 ? (
-          <div className="loading">Loading documents...</div>
-        ) : error ? (
-          <div className="error-message">{error}</div>
-        ) : documents.length === 0 ? (
-          <div className="empty-state">No documents yet. Upload your first document above.</div>
-        ) : (
-          <div className="table-container">
-            <table className="documents-table">
-              <thead>
-                <tr>
-                  <th>Filename</th>
-                  <th>Status</th>
-                  <th>Uploaded At</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {documents.map((doc) => (
-                  <tr key={doc.id}>
-                    <td className="filename-cell">{doc.filename}</td>
-                    <td>
-                      <span className={`status-badge status-${doc.status}`}>
-                        {doc.status}
-                      </span>
-                    </td>
-                    <td className="date-cell">
-                      {doc.created_at ? formatDate(doc.created_at) : '-'}
-                    </td>
-                    <td className="error-cell">
-                      {doc.error_message || '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="docs-grid">
+          {/* Left Column: Upload & Status */}
+          <div className="left-column">
+            {/* Status Banner */}
+            {bannerMessage && (
+              <div className={`status-card ${bannerClass}`}>
+                <div className="status-content">
+                  {isPolling && <span className="spinner small"></span>}
+                  <span>{bannerMessage}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Upload Card */}
+            <div className="upload-card">
+              <h2>Upload Files</h2>
+              <div
+                className={`upload-area ${dragActive ? 'drag-active' : ''} ${isActive ? 'disabled' : ''}`}
+                onDragEnter={handleDragEnter}
+                onDragLeave={handleDragLeave}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => handleUpload(e.target.files)}
+                  className="file-input"
+                  id="file-upload"
+                  disabled={isActive}
+                />
+                <label htmlFor="file-upload" className="upload-label">
+                  {uploading ? (
+                    <>
+                      <span className="spinner"></span>
+                      <span>Uploading...</span>
+                    </>
+                  ) : fetching ? (
+                    <>
+                      <span className="spinner"></span>
+                      <span>Refreshing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="upload-icon">📁</span>
+                      <span>Click to select files or drag & drop</span>
+                      <span className="upload-hint">PDF, TXT, DOC, DOCX</span>
+                    </>
+                  )}
+                </label>
+              </div>
+              {uploadSuccess && <div className="success-message">{uploadSuccess}</div>}
+              {uploadError && <div className="error-message">{uploadError}</div>}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="action-buttons">
+              <button
+                className="btn-primary"
+                onClick={() => navigate('/query')}
+                disabled={!hasIndexedDocs}
+                title={!hasIndexedDocs ? 'Upload and index at least one document first' : 'Go to chat'}
+              >
+                {hasIndexedDocs ? '→ Go to Chat (Step 2)' : '→ Go to Chat'}
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isActive}
+              >
+                + Upload Another
+              </button>
+            </div>
           </div>
-        )}
+
+          {/* Right Column: Documents Table */}
+          <div className="right-column">
+            <div className="table-card">
+              <div className="table-header">
+                <div className="table-title-row">
+                  <h2>Your Documents</h2>
+                  <div className="table-actions">
+                    {documents.some(d => d.status === 'indexed') && (
+                      <span className="active-docs-indicator">
+                        Active: {selectedDocs.length === 0 ? 'All' : selectedDocs.length}
+                      </span>
+                    )}
+                    <button
+                      className="refresh-button"
+                      onClick={handleRefresh}
+                      disabled={fetching}
+                      title="Refresh documents"
+                    >
+                      <span className={`refresh-icon ${fetching ? 'spinning' : ''}`}>↻</span>
+                    </button>
+                  </div>
+                </div>
+                {lastRefreshed && (
+                  <div className="last-refreshed">
+                    Last refreshed: {lastRefreshed.toLocaleTimeString('en-US', { 
+                      hour: '2-digit', 
+                      minute: '2-digit', 
+                      second: '2-digit',
+                      hour12: false 
+                    })}
+                  </div>
+                )}
+              </div>
+              {loading && documents.length === 0 ? (
+                <div className="loading">
+                  <span className="spinner"></span>
+                  <span>Loading documents...</span>
+                </div>
+              ) : error ? (
+                <div className="error-message">{error}</div>
+              ) : documents.length === 0 ? (
+                <div className="empty-state">
+                  <span className="empty-icon">📄</span>
+                  <p>No documents yet</p>
+                  <p className="empty-hint">Upload your first document to get started</p>
+                </div>
+              ) : (
+                <div className={`table-container ${fetching ? 'refreshing' : ''}`}>
+                  <table className="documents-table">
+                    <thead>
+                      <tr>
+                        <th className="checkbox-col">
+                          <input
+                            type="checkbox"
+                            checked={selectedDocs.length > 0 && selectedDocs.length === documents.filter(d => d.status === 'indexed').length}
+                            onChange={handleToggleAll}
+                            disabled={documents.filter(d => d.status === 'indexed').length === 0}
+                            title="Select/deselect all indexed documents"
+                          />
+                        </th>
+                        <th>Filename</th>
+                        <th>Status</th>
+                        <th>Uploaded</th>
+                        <th>Error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {documents.map((doc) => {
+                        const isIndexed = doc.status === 'indexed';
+                        const isSelected = selectedDocs.includes(doc.id);
+                        return (
+                          <tr key={doc.id}>
+                            <td className="checkbox-col">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => handleToggleDoc(doc.id)}
+                                disabled={!isIndexed}
+                                title={isIndexed ? 'Include in chat queries' : 'Document must be indexed first'}
+                              />
+                            </td>
+                            <td className="filename-cell">{doc.filename}</td>
+                            <td>
+                              <span className={`status-badge status-${doc.status}`}>
+                                {doc.status === 'pending' && <span className="status-spinner"></span>}
+                                {doc.status}
+                              </span>
+                            </td>
+                            <td className="date-cell">
+                              {doc.created_at ? formatDate(doc.created_at) : '-'}
+                            </td>
+                            <td className="error-cell">
+                              {doc.error_message || '-'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
