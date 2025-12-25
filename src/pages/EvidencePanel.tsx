@@ -95,7 +95,7 @@ function EvidenceItemComponent({ evidence, index, query }: EvidenceItemComponent
           {evidence.heading && <span className="evidence-heading">{evidence.heading}</span>}
           {!evidence.heading && <span className="evidence-heading">Evidence {index + 1}</span>}
           {matchCount > 0 && (
-            <span className="match-badge">Matched terms: {matchCount}</span>
+            <span className="match-badge">Time anchor detected</span>
           )}
         </div>
         <div className="evidence-actions">
