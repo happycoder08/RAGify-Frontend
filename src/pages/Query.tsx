@@ -128,6 +128,11 @@ export default function Query() {
             setAnswer(final.answer || '');
           }
 
+          // If final provides debug_info, treat it as authoritative as well
+          if (final.debug_info) {
+            setDebugInfo(final.debug_info);
+          }
+
           // Clear streaming buffer and stop streaming
           setStreamingAnswer('');
           setStreaming(false);
