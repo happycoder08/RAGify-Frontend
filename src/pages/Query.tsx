@@ -18,6 +18,9 @@ const CACHE_TTL = 10000; // 10 seconds
 export default function Query() {
   const [question, setQuestion] = useState('');
   const [streaming, setStreaming] = useState(false);
+  // `streamingAnswer` is the temporary buffer updated by token events.
+  // `answer` is the canonical, committed answer updated only from the final event.
+  const [streamingAnswer, setStreamingAnswer] = useState('');
   const [answer, setAnswer] = useState('');
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [finalResponse, setFinalResponse] = useState<QueryFinalResponse | null>(null);
@@ -65,11 +68,13 @@ export default function Query() {
     if (!questionText.trim()) return;
 
     setStreaming(true);
+    setStreamingAnswer('');
     setAnswer('');
     setDebugInfo(null);
     setFinalResponse(null);
     setError(null);
     setLastQuery(questionText.trim()); // Store for retry
+
 
     // Build query request with optional doc_ids filter
     const queryRequest = {
@@ -80,6 +85,15 @@ export default function Query() {
       ...(selectedDocIds.length > 0 && { doc_ids: selectedDocIds }), // Only include if specific docs selected
     };
 
+    // DEV logging: print outgoing query payload and doc_ids status
+    if (import.meta.env.DEV) {
+      if ('doc_ids' in queryRequest) {
+        console.log('[Query] Sending request with doc_ids:', queryRequest.doc_ids, queryRequest);
+      } else {
+        console.log('[Query] Sending request for ALL docs (no doc_ids):', queryRequest);
+      }
+    }
+
     const { abort } = queryWithSSE(
       queryRequest,
       {
@@ -87,12 +101,45 @@ export default function Query() {
           setDebugInfo(debug);
         },
         onToken: (token) => {
-          setAnswer((prev) => prev + token);
+          setStreamingAnswer((prev) => {
+            const next = prev + token;
+            if (import.meta.env.DEV) {
+              console.log('[SSE stream] streamingAnswer (first120):', next.slice(0, 120));
+            }
+            return next;
+          });
         },
         onFinal: (final) => {
-          setFinalResponse(final);
+          // Final event is the single source of truth. Overwrite answer/evidence/sources.
+          const canonicalRefusal = 'The document does not specify this.';
+
+          if (final.refused) {
+            // If refused, show canonical refusal message and clear evidence/sources
+            const finalObj = {
+              ...final,
+              answer: canonicalRefusal,
+              evidence: [],
+              sources: [],
+            } as QueryFinalResponse;
+            setFinalResponse(finalObj);
+            setAnswer(canonicalRefusal);
+          } else {
+            setFinalResponse(final);
+            setAnswer(final.answer || '');
+          }
+
+          // Clear streaming buffer and stop streaming
+          setStreamingAnswer('');
           setStreaming(false);
           abortRef.current = null;
+
+          // DEV logs to confirm alignment
+          if (import.meta.env.DEV) {
+            console.log('[SSE final] final.answer:', (final.answer || '').slice(0, 200));
+            if (final.evidence && final.evidence.length > 0) {
+              console.log('[SSE final] final.evidence[0].chunk_id:', final.evidence[0].chunk_id);
+            }
+          }
         },
         onError: (err) => {
           setError(err.message);
@@ -284,7 +331,7 @@ export default function Query() {
               )}
 
               <div className="answer-content">
-                {finalResponse?.answer || answer}
+                {finalResponse ? (finalResponse.answer) : (streaming ? streamingAnswer : answer)}
                 {streaming && <span className="cursor">▊</span>}
               </div>
 
