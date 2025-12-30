@@ -25,6 +25,9 @@ export default function Query() {
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [finalResponse, setFinalResponse] = useState<QueryFinalResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Dev-only diagnostic banners
+  const [devInvariantMsg, setDevInvariantMsg] = useState<string | null>(null);
+  const [devMismatchMsg, setDevMismatchMsg] = useState<string | null>(null);
   const [hasPendingDocs, setHasPendingDocs] = useState(false);
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
   const [lastQuery, setLastQuery] = useState<string>('');
@@ -44,12 +47,49 @@ export default function Query() {
       try {
         const response = await listDocuments();
         const pending = response.documents.some(doc => doc.status === 'pending');
-        
+
         // Update cache
         docStatusCache = {
           hasPending: pending,
-          onToken: (token) => handleSSEToken(token),
-          onFinal: (final) => handleSSEFinal(final),
+          timestamp: Date.now(),
+        };
+
+        setHasPendingDocs(pending);
+        setDocuments(response.documents);
+      } catch (err) {
+        console.error('Failed to check document readiness:', err);
+      }
+    };
+
+    checkReadiness();
+
+    // Refresh selected doc IDs when page loads (in case changed on Docs page)
+    setSelectedDocIds(getSelectedDocIds());
+  }, []);
+
+  const executeQuery = (questionText: string) => {
+    if (!questionText.trim()) return;
+
+    setStreaming(true);
+    setStreamingAnswer('');
+    setAnswer('');
+    setDebugInfo(null);
+    setFinalResponse(null);
+    setError(null);
+    setLastQuery(questionText.trim());
+
+    const queryRequest = {
+      question: questionText.trim(),
+      mode: 'full' as const,
+      top_k: 4,
+      debug: debugDrawerOpen ? 2 : 0,
+      ...(selectedDocIds.length > 0 && { doc_ids: selectedDocIds }),
+    };
+
+    // DEV logging: print outgoing query payload and doc_ids status
+    if (import.meta.env.DEV) {
+      if ('doc_ids' in queryRequest) {
+        console.log('[Query] Sending request with doc_ids:', (queryRequest as any).doc_ids, queryRequest);
       } else {
         console.log('[Query] Sending request for ALL docs (no doc_ids):', queryRequest);
       }
@@ -58,55 +98,9 @@ export default function Query() {
     const { abort } = queryWithSSE(
       queryRequest,
       {
-        onDebug: (debug) => {
-          setDebugInfo(debug);
-        },
-        onToken: (token) => {
-          setStreamingAnswer((prev) => {
-            const next = prev + token;
-            if (import.meta.env.DEV) {
-              console.log('[SSE stream] streamingAnswer (first120):', next.slice(0, 120));
-            }
-            return next;
-          });
-        },
-        onFinal: (final) => {
-          // Final event is the single source of truth. Overwrite answer/evidence/sources.
-          const canonicalRefusal = 'The document does not specify this.';
-
-          if (final.refused) {
-            // If refused, show canonical refusal message and clear evidence/sources
-            const finalObj = {
-              ...final,
-              answer: canonicalRefusal,
-              evidence: [],
-              sources: [],
-            } as QueryFinalResponse;
-            setFinalResponse(finalObj);
-            setAnswer(canonicalRefusal);
-          } else {
-            setFinalResponse(final);
-            setAnswer(final.answer || '');
-          }
-
-          // If final provides debug_info, treat it as authoritative as well
-          if (final.debug_info) {
-            setDebugInfo(final.debug_info);
-          }
-
-          // Clear streaming buffer and stop streaming
-          setStreamingAnswer('');
-          setStreaming(false);
-          abortRef.current = null;
-
-          // DEV logs to confirm alignment
-          if (import.meta.env.DEV) {
-            console.log('[SSE final] final.answer:', (final.answer || '').slice(0, 200));
-            if (final.evidence && final.evidence.length > 0) {
-              console.log('[SSE final] final.evidence[0].chunk_id:', final.evidence[0].chunk_id);
-            }
-          }
-        },
+        onDebug: (debug) => setDebugInfo(debug),
+        onToken: (token) => handleSSEToken(token),
+        onFinal: (final) => handleSSEFinal(final),
         onError: (err) => {
           setError(err.message);
           setStreaming(false);
@@ -130,6 +124,8 @@ export default function Query() {
     }
     setStreaming(false);
     setStreamingAnswer('');
+    setDevInvariantMsg(null);
+    setDevMismatchMsg(null);
   };
 
   const handleClear = () => {
@@ -144,6 +140,8 @@ export default function Query() {
       abortRef.current = null;
     }
     setStreaming(false);
+    setDevInvariantMsg(null);
+    setDevMismatchMsg(null);
   };
 
   const handleRetry = () => {
@@ -192,6 +190,27 @@ export default function Query() {
       console.log('[SSE final] final.answer:', (final.answer || '').slice(0, 200));
       if (final.evidence && final.evidence.length > 0) {
         console.log('[SSE final] final.evidence[0].chunk_id:', final.evidence[0].chunk_id);
+      }
+
+      // Dev-only invariant: final must include evidence and sources when not refused
+      if (!final.refused && (!final.evidence || final.evidence.length === 0 || !final.sources || final.sources.length === 0)) {
+        setDevInvariantMsg('DEV ERROR: final payload missing evidence or sources.');
+      } else {
+        setDevInvariantMsg(null);
+      }
+
+      // Dev-only mismatch detector: if answer contains a clock time but evidence snippet doesn't
+      setDevMismatchMsg(null);
+      if (!final.refused && final.answer) {
+        const timeRegex = /\b\d{1,2}:\d{2}\s?(?:AM|PM)\b/i;
+        const timeMatch = final.answer.match(timeRegex);
+        if (timeMatch && final.evidence && final.evidence.length > 0) {
+          const snippet = final.evidence[0].snippet || '';
+          if (!snippet.includes(timeMatch[0])) {
+            setDevMismatchMsg('DEV: Answer/Evidence mismatch');
+            console.error('[DEV] Answer/Evidence mismatch', final);
+          }
+        }
       }
     }
   };
@@ -388,6 +407,18 @@ export default function Query() {
                       Reason: {finalResponse.refusal_reason}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* DEV diagnostic banners */}
+              {devInvariantMsg && (
+                <div className="dev-error-banner" style={{ background: '#ffdddd', padding: 8, marginBottom: 8, borderRadius: 6 }}>
+                  <strong>{devInvariantMsg}</strong>
+                </div>
+              )}
+              {devMismatchMsg && (
+                <div className="dev-mismatch-banner" style={{ background: '#fff3bf', padding: 8, marginBottom: 8, borderRadius: 6 }}>
+                  <strong>{devMismatchMsg}</strong>
                 </div>
               )}
 
