@@ -48,47 +48,8 @@ export default function Query() {
         // Update cache
         docStatusCache = {
           hasPending: pending,
-          timestamp: Date.now(),
-        };
-        
-        setHasPendingDocs(pending);
-        setDocuments(response.documents);
-      } catch (err) {
-        console.error('Failed to check document readiness:', err);
-      }
-    };
-
-    checkReadiness();
-    
-    // Refresh selected doc IDs when page loads (in case changed on Docs page)
-    setSelectedDocIds(getSelectedDocIds());
-  }, []);
-
-  const executeQuery = (questionText: string) => {
-    if (!questionText.trim()) return;
-
-    setStreaming(true);
-    setStreamingAnswer('');
-    setAnswer('');
-    setDebugInfo(null);
-    setFinalResponse(null);
-    setError(null);
-    setLastQuery(questionText.trim()); // Store for retry
-
-
-    // Build query request with optional doc_ids filter
-    const queryRequest = {
-      question: questionText.trim(),
-      mode: 'full' as const,
-      top_k: 4,
-      debug: debugDrawerOpen ? 2 : 0, // Enable verbose debug when drawer is open
-      ...(selectedDocIds.length > 0 && { doc_ids: selectedDocIds }), // Only include if specific docs selected
-    };
-
-    // DEV logging: print outgoing query payload and doc_ids status
-    if (import.meta.env.DEV) {
-      if ('doc_ids' in queryRequest) {
-        console.log('[Query] Sending request with doc_ids:', queryRequest.doc_ids, queryRequest);
+          onToken: (token) => handleSSEToken(token),
+          onFinal: (final) => handleSSEFinal(final),
       } else {
         console.log('[Query] Sending request for ALL docs (no doc_ids):', queryRequest);
       }
@@ -188,6 +149,50 @@ export default function Query() {
   const handleRetry = () => {
     if (lastQuery) {
       executeQuery(lastQuery);
+    }
+  };
+
+  // --- SSE handlers extracted so they can be reused by a DEV-only simulator ---
+  const handleSSEToken = (token: string) => {
+    setStreamingAnswer((prev) => {
+      const next = prev + token;
+      if (import.meta.env.DEV) {
+        console.log('[SSE stream] streamingAnswer (first120):', next.slice(0, 120));
+      }
+      return next;
+    });
+  };
+
+  const handleSSEFinal = (final: QueryFinalResponse) => {
+    const canonicalRefusal = 'The document does not specify this.';
+
+    if (final.refused) {
+      const finalObj = {
+        ...final,
+        answer: canonicalRefusal,
+        evidence: [],
+        sources: [],
+      } as QueryFinalResponse;
+      setFinalResponse(finalObj);
+      setAnswer(canonicalRefusal);
+    } else {
+      setFinalResponse(final);
+      setAnswer(final.answer || '');
+    }
+
+    if (final.debug_info) {
+      setDebugInfo(final.debug_info);
+    }
+
+    setStreamingAnswer('');
+    setStreaming(false);
+    abortRef.current = null;
+
+    if (import.meta.env.DEV) {
+      console.log('[SSE final] final.answer:', (final.answer || '').slice(0, 200));
+      if (final.evidence && final.evidence.length > 0) {
+        console.log('[SSE final] final.evidence[0].chunk_id:', final.evidence[0].chunk_id);
+      }
     }
   };
 
@@ -299,6 +304,55 @@ export default function Query() {
         {requestId && (
           <div className="request-id">
             Request ID: <code>{requestId}</code>
+          </div>
+        )}
+
+        {/* DEV: SSE simulator to test streaming vs final alignment */}
+        {import.meta.env.DEV && (
+          <div className="dev-sse-simulator" style={{ marginTop: 12 }}>
+            <h4>DEV: Simulate SSE</h4>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => {
+                  // Simulate tokens then a matching final
+                  setStreaming(true);
+                  setStreamingAnswer('');
+                  const tokens = ['The ', 'document ', 'states ', 'that ', 'health ', 'insurance ', 'is ', 'provided.'];
+                  tokens.forEach((t, i) => setTimeout(() => handleSSEToken(t), 100 * (i + 1)));
+                  setTimeout(() => {
+                    handleSSEFinal({
+                      answer: 'The document states that health insurance is provided.',
+                      refused: false,
+                      evidence: [{ chunk_id: '20_Employee_Onboarding_Guide_1.txt_30', snippet: '...' } as any],
+                      sources: [{ filename: 'Employee_Onboarding_Guide_1.txt' } as any],
+                    } as QueryFinalResponse);
+                  }, 100 * (tokens.length + 2));
+                }}
+              >
+                Simulate matching final
+              </button>
+
+              <button
+                onClick={() => {
+                  // Simulate tokens that disagree, then a refusal final
+                  setStreaming(true);
+                  setStreamingAnswer('');
+                  const tokens = ['ARRIVE ', 'AT ', '8:00 ', 'AM'];
+                  tokens.forEach((t, i) => setTimeout(() => handleSSEToken(t), 120 * (i + 1)));
+                  setTimeout(() => {
+                    handleSSEFinal({
+                      answer: 'ARRIVE AT 8:00 AM',
+                      refused: true,
+                      refusal_reason: 'No matching info',
+                      evidence: [{ chunk_id: '20_Employee_Onboarding_Guide_1.txt_30', snippet: '...' } as any],
+                      sources: [{ filename: 'Employee_Onboarding_Guide_1.txt' } as any],
+                    } as QueryFinalResponse);
+                  }, 120 * (tokens.length + 2));
+                }}
+              >
+                Simulate refusal final
+              </button>
+            </div>
           </div>
         )}
 
