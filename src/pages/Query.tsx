@@ -163,11 +163,13 @@ export default function Query() {
       abortRef.current = null;
     }
     setStreaming(false);
+    setStreamingAnswer('');
   };
 
   const handleClear = () => {
     setQuestion('');
     setAnswer('');
+    setStreamingAnswer('');
     setDebugInfo(null);
     setFinalResponse(null);
     setError(null);
