@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { queryWithSSE } from '../sse';
 import { listDocuments } from '../api';
-import type { QueryFinalResponse, DebugInfo, DocumentRecord } from '../contracts/types';
+import type { DebugInfo, DocumentRecord } from '../contracts/types';
 import { getSelectedDocIds } from '../utils/documentSelection';
 import EvidencePanel from './EvidencePanel';
 import DebugDrawer from './DebugDrawer';
@@ -18,12 +18,13 @@ const CACHE_TTL = 10000; // 10 seconds
 export default function Query() {
   const [question, setQuestion] = useState('');
   const [streaming, setStreaming] = useState(false);
-  // `streamingAnswer` is the temporary buffer updated by token events.
-  // `answer` is the canonical, committed answer updated only from the final event.
-  const [streamingAnswer, setStreamingAnswer] = useState('');
-  const [answer, setAnswer] = useState('');
+  // State machine states
+  const [answerText, setAnswerText] = useState('');
+  const answerBufferRef = useRef('');
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
-  const [finalResponse, setFinalResponse] = useState<QueryFinalResponse | null>(null);
+  const [evidence, setEvidence] = useState<any[]>([]);
+  const [sources, setSources] = useState<any[]>([]);
+  const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Dev-only diagnostic banners
   const [devInvariantMsg, setDevInvariantMsg] = useState<string | null>(null);
@@ -33,6 +34,7 @@ export default function Query() {
   const [lastQuery, setLastQuery] = useState<string>('');
   const [selectedDocIds, setSelectedDocIds] = useState<number[]>(() => getSelectedDocIds());
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [rawResponse, setRawResponse] = useState<string>('');
   const abortRef = useRef<(() => void) | null>(null);
 
   // Readiness check: fetch documents on mount and check for pending status
@@ -71,11 +73,14 @@ export default function Query() {
     if (!questionText.trim()) return;
 
     setStreaming(true);
-    setStreamingAnswer('');
-    setAnswer('');
+    setAnswerText('');
+    answerBufferRef.current = '';
     setDebugInfo(null);
-    setFinalResponse(null);
+    setEvidence([]);
+    setSources([]);
+    setRefused(false);
     setError(null);
+    setRawResponse('');
     setLastQuery(questionText.trim());
 
     const queryRequest = {
@@ -83,6 +88,7 @@ export default function Query() {
       mode: 'full' as const,
       top_k: 4,
       debug: debugDrawerOpen ? 2 : 0,
+      stream: false,
       ...(selectedDocIds.length > 0 && { doc_ids: selectedDocIds }),
     };
 
@@ -98,9 +104,29 @@ export default function Query() {
     const { abort } = queryWithSSE(
       queryRequest,
       {
-        onDebug: (debug) => setDebugInfo(debug),
-        onToken: (token) => handleSSEToken(token),
-        onFinal: (final) => handleSSEFinal(final),
+        // Rule 1: On 'debug' event: setDebugInfo(data) only. Do NOT set answer.
+        onDebug: (data) => {
+          console.log('[SSE debug] Setting debugInfo:', data);
+          setDebugInfo(data);
+        },
+        // Rule 2: On 'token' event: append data.t to answerBufferRef and setAnswerText(answerBufferRef) for live streaming.
+        onToken: (token) => {
+          answerBufferRef.current += token;
+          setAnswerText(answerBufferRef.current);
+        },
+        // Rule 3: On 'final' event: set all final state
+        onFinal: (data) => {
+          console.log('[SSE final] Setting final state with answer:', data.answer);
+          setRawResponse(JSON.stringify(data, null, 2));
+          setRefused(data.refused);
+          setAnswerText(data.answer);
+          setEvidence(data.evidence);
+          setSources(data.sources);
+          setDebugInfo(data.debug_info ?? debugInfo);
+          setStreaming(false);
+          abortRef.current = null;
+        },
+        // Rule 4: On 'error': show error state and stop.
         onError: (err) => {
           setError(err.message);
           setStreaming(false);
@@ -123,18 +149,22 @@ export default function Query() {
       abortRef.current = null;
     }
     setStreaming(false);
-    setStreamingAnswer('');
+    setAnswerText('');
+    answerBufferRef.current = '';
     setDevInvariantMsg(null);
     setDevMismatchMsg(null);
   };
 
   const handleClear = () => {
     setQuestion('');
-    setAnswer('');
-    setStreamingAnswer('');
+    setAnswerText('');
+    answerBufferRef.current = '';
     setDebugInfo(null);
-    setFinalResponse(null);
+    setEvidence([]);
+    setSources([]);
+    setRefused(false);
     setError(null);
+    setRawResponse('');
     if (abortRef.current) {
       abortRef.current();
       abortRef.current = null;
@@ -147,71 +177,6 @@ export default function Query() {
   const handleRetry = () => {
     if (lastQuery) {
       executeQuery(lastQuery);
-    }
-  };
-
-  // --- SSE handlers extracted so they can be reused by a DEV-only simulator ---
-  const handleSSEToken = (token: string) => {
-    setStreamingAnswer((prev) => {
-      const next = prev + token;
-      if (import.meta.env.DEV) {
-        console.log('[SSE stream] streamingAnswer (first120):', next.slice(0, 120));
-      }
-      return next;
-    });
-  };
-
-  const handleSSEFinal = (final: QueryFinalResponse) => {
-    const canonicalRefusal = 'The document does not specify this.';
-
-    if (final.refused) {
-      const finalObj = {
-        ...final,
-        answer: canonicalRefusal,
-        evidence: [],
-        sources: [],
-      } as QueryFinalResponse;
-      setFinalResponse(finalObj);
-      setAnswer(canonicalRefusal);
-    } else {
-      setFinalResponse(final);
-      setAnswer(final.answer || '');
-    }
-
-    if (final.debug_info) {
-      setDebugInfo(final.debug_info);
-    }
-
-    setStreamingAnswer('');
-    setStreaming(false);
-    abortRef.current = null;
-
-    if (import.meta.env.DEV) {
-      console.log('[SSE final] final.answer:', (final.answer || '').slice(0, 200));
-      if (final.evidence && final.evidence.length > 0) {
-        console.log('[SSE final] final.evidence[0].chunk_id:', final.evidence[0].chunk_id);
-      }
-
-      // Dev-only invariant: final must include evidence and sources when not refused
-      if (!final.refused && (!final.evidence || final.evidence.length === 0 || !final.sources || final.sources.length === 0)) {
-        setDevInvariantMsg('DEV ERROR: final payload missing evidence or sources.');
-      } else {
-        setDevInvariantMsg(null);
-      }
-
-      // Dev-only mismatch detector: if answer contains a clock time but evidence snippet doesn't
-      setDevMismatchMsg(null);
-      if (!final.refused && final.answer) {
-        const timeRegex = /\b\d{1,2}:\d{2}\s?(?:AM|PM)\b/i;
-        const timeMatch = final.answer.match(timeRegex);
-        if (timeMatch && final.evidence && final.evidence.length > 0) {
-          const snippet = final.evidence[0].snippet || '';
-          if (!snippet.includes(timeMatch[0])) {
-            setDevMismatchMsg('DEV: Answer/Evidence mismatch');
-            console.error('[DEV] Answer/Evidence mismatch', final);
-          }
-        }
-      }
     }
   };
 
@@ -231,9 +196,6 @@ export default function Query() {
     }
     return `${selectedDocs.length} documents`;
   };
-
-  // Extract request_id from debug info or final response
-  const requestId = debugInfo?.request_id || finalResponse?.debug_info?.request_id;
 
   return (
     <div className="query-page">
@@ -304,7 +266,7 @@ export default function Query() {
                   Cancel
                 </button>
               )}
-              {(question || answer || finalResponse || error) && !streaming && (
+              {(question || answerText || error) && !streaming && (
                 <button type="button" onClick={handleClear} className="clear-button">
                   Clear
                 </button>
@@ -320,60 +282,7 @@ export default function Query() {
           <Link to="/docs" className="scope-link">Change →</Link>
         </div>
 
-        {requestId && (
-          <div className="request-id">
-            Request ID: <code>{requestId}</code>
-          </div>
-        )}
 
-        {/* DEV: SSE simulator to test streaming vs final alignment */}
-        {import.meta.env.DEV && (
-          <div className="dev-sse-simulator" style={{ marginTop: 12 }}>
-            <h4>DEV: Simulate SSE</h4>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                onClick={() => {
-                  // Simulate tokens then a matching final
-                  setStreaming(true);
-                  setStreamingAnswer('');
-                  const tokens = ['The ', 'document ', 'states ', 'that ', 'health ', 'insurance ', 'is ', 'provided.'];
-                  tokens.forEach((t, i) => setTimeout(() => handleSSEToken(t), 100 * (i + 1)));
-                  setTimeout(() => {
-                    handleSSEFinal({
-                      answer: 'The document states that health insurance is provided.',
-                      refused: false,
-                      evidence: [{ chunk_id: '20_Employee_Onboarding_Guide_1.txt_30', snippet: '...' } as any],
-                      sources: [{ filename: 'Employee_Onboarding_Guide_1.txt' } as any],
-                    } as QueryFinalResponse);
-                  }, 100 * (tokens.length + 2));
-                }}
-              >
-                Simulate matching final
-              </button>
-
-              <button
-                onClick={() => {
-                  // Simulate tokens that disagree, then a refusal final
-                  setStreaming(true);
-                  setStreamingAnswer('');
-                  const tokens = ['ARRIVE ', 'AT ', '8:00 ', 'AM'];
-                  tokens.forEach((t, i) => setTimeout(() => handleSSEToken(t), 120 * (i + 1)));
-                  setTimeout(() => {
-                    handleSSEFinal({
-                      answer: 'ARRIVE AT 8:00 AM',
-                      refused: true,
-                      refusal_reason: 'No matching info',
-                      evidence: [{ chunk_id: '20_Employee_Onboarding_Guide_1.txt_30', snippet: '...' } as any],
-                      sources: [{ filename: 'Employee_Onboarding_Guide_1.txt' } as any],
-                    } as QueryFinalResponse);
-                  }, 120 * (tokens.length + 2));
-                }}
-              >
-                Simulate refusal final
-              </button>
-            </div>
-          </div>
-        )}
 
         {error && (
           <div className="error-message">
@@ -392,21 +301,17 @@ export default function Query() {
         )}
 
         {/* Middle & Right: Answer and Evidence */}
-        {(answer || finalResponse) && (
+        {(streaming || answerText) && (
           <div className="results-grid">
             {/* Middle: Answer Panel */}
             <div className="answer-panel">
               <h2>Answer</h2>
               
               {/* Refusal Banner */}
-              {finalResponse?.refused && (
+              {refused && (
                 <div className="refusal-banner">
                   <div className="refusal-title">⚠️ Answer not found in uploaded documents</div>
-                  {finalResponse.refusal_reason && (
-                    <div className="refusal-reason">
-                      Reason: {finalResponse.refusal_reason}
-                    </div>
-                  )}
+                  {/* Note: refusal_reason not available in new state machine */}
                 </div>
               )}
 
@@ -423,7 +328,7 @@ export default function Query() {
               )}
 
               <div className="answer-content">
-                {finalResponse ? (finalResponse.answer) : (streaming ? streamingAnswer : answer)}
+                {answerText}
                 {streaming && <span className="cursor">▊</span>}
               </div>
 
@@ -435,19 +340,33 @@ export default function Query() {
             </div>
 
             {/* Right/Below: Evidence Panel (hide if refused) */}
-            {finalResponse && !finalResponse.refused && (
+            {!refused && evidence && evidence.length > 0 && (
               <div className="evidence-panel-container">
+                {evidence[0].anchor_type && (
+                  <div className="anchor-type-banner">
+                    {evidence[0].anchor_type === 'WIFI' && '🔗 WIFI ANCHOR DETECTED'}
+                    {evidence[0].anchor_type === 'TIME' && '⏰ TIME ANCHOR DETECTED'}
+                  </div>
+                )}
                 <EvidencePanel 
-                  evidence={finalResponse.evidence} 
+                  evidence={[evidence[0]]} 
                   query={question}
-                  refused={finalResponse.refused}
-                  sources={finalResponse.sources}
+                  refused={refused}
+                  sources={sources}
                 />
               </div>
             )}
           </div>
         )}
       </div>
+
+      {/* Temporary Debug Panel */}
+      {rawResponse && (
+        <div style={{ marginTop: '20px', padding: '10px', border: '1px solid #ccc', backgroundColor: '#f9f9f9' }}>
+          <h3>Raw Response JSON</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px' }}>{rawResponse}</pre>
+        </div>
+      )}
 
       {/* Debug Drawer */}
       <DebugDrawer

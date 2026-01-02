@@ -93,6 +93,30 @@ export function queryWithSSE(
 
   const executeQuery = async () => {
     try {
+      // Handle non-streaming request
+      if (request.stream === false) {
+        const response = await fetch(`${API_BASE_URL}/api/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ ...request, stream: false }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+          throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+
+        const finalData = await response.json() as QueryFinalResponse;
+        handlers.onFinal?.(finalData);
+        resolveDone(finalData);
+        return;
+      }
+
+      // Streaming request (original logic)
       const response = await fetch(`${API_BASE_URL}/api/query`, {
         method: 'POST',
         headers: {

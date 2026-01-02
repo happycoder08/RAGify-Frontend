@@ -29,6 +29,7 @@ export interface QueryRequest {
   conversation_id?: number;
   doc_ids?: number[];
   debug?: number; // 0 = no debug, 1 = basic, 2 = verbose
+  stream?: boolean;
 }
 
 export interface EvidenceItem {
@@ -36,6 +37,7 @@ export interface EvidenceItem {
   chunk_id: string;
   heading?: string | null;
   doc_id?: number | null;
+  anchor_type?: "WIFI" | "TIME" | null;
 }
 
 export interface SourceItem {

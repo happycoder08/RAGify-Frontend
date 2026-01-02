@@ -164,13 +164,6 @@ export default function DebugDrawer({ isOpen, onToggle, debugInfo }: DebugDrawer
                 </code>
               </div>
             )}
-
-            {debugInfo.context && (
-              <div className="debug-section">
-                <h4>Context</h4>
-                <pre className="debug-code-block">{debugInfo.context}</pre>
-              </div>
-            )}
           </div>
         )}
 

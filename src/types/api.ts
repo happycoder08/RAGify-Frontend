@@ -21,6 +21,7 @@ export interface QueryRequest {
   conversation_id?: number;
   doc_ids?: number[];
   debug?: number; // 0=off, 1=detailed, 2=verbose
+  stream?: boolean;
 }
 
 export interface EvidenceItem {

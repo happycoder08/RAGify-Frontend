@@ -1,49 +1,75 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { listDocuments, uploadDocuments } from '../api';
+import { listDocuments, uploadDocuments, purgeDocuments } from '../api';
 import type { DocumentRecord } from '../contracts/types';
 import { getSelectedDocIds, toggleDocId, clearSelection } from '../utils/documentSelection';
 import './Docs.css';
 
 export default function Docs() {
   const navigate = useNavigate();
+
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const [purgeLoading, setPurgeLoading] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
+  const [purgeSuccess, setPurgeSuccess] = useState<string | null>(null);
+
   const [dragActive, setDragActive] = useState(false);
   const [pollingTimeoutReached, setPollingTimeoutReached] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
+
   const [selectedDocs, setSelectedDocs] = useState<number[]>(() => getSelectedDocIds());
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingIntervalRef = useRef<number | null>(null);
   const pollingStartTimeRef = useRef<number | null>(null);
 
   // Fetch documents
   const fetchDocuments = async (showLoading = true) => {
-    if (showLoading) {
-      setFetching(true);
-    }
+    if (showLoading) setLoading(true);
+    setFetching(true);
+    setError(null);
+
     try {
-      const response = await listDocuments();
-      setDocuments(response.documents);
-      setError(null);
+      const docs = await listDocuments();
+      // listDocuments may return { documents: [...] } or [...] depending on your api.ts
+      const normalized = Array.isArray(docs) ? docs : (docs as any)?.documents ?? [];
+      setDocuments(normalized);
       setLastRefreshed(new Date());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load documents');
+      setError(err instanceof Error ? err.message : 'Failed to fetch documents');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
       setFetching(false);
     }
   };
 
-  // Manual refresh handler
   const handleRefresh = () => {
-    fetchDocuments(true);
+    fetchDocuments(false);
+  };
+
+  // Purge indexed documents
+  const handlePurge = async () => {
+    setPurgeLoading(true);
+    setPurgeError(null);
+    setPurgeSuccess(null);
+    try {
+      const result = await purgeDocuments();
+      setPurgeSuccess(result?.message || 'Indexed documents cleared');
+      await fetchDocuments(false);
+      setTimeout(() => setPurgeSuccess(null), 4000);
+    } catch (err) {
+      setPurgeError(err instanceof Error ? err.message : 'Failed to clear documents');
+    } finally {
+      setPurgeLoading(false);
+    }
   };
 
   // Check if polling is needed
@@ -77,7 +103,7 @@ export default function Docs() {
         }
 
         // Start polling every 2 seconds
-        pollingIntervalRef.current = setInterval(() => {
+        pollingIntervalRef.current = window.setInterval(() => {
           const elapsed = Date.now() - (pollingStartTimeRef.current || 0);
           if (elapsed >= 60000) {
             if (pollingIntervalRef.current) {
@@ -106,11 +132,13 @@ export default function Docs() {
         pollingIntervalRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documents]);
 
   // Initial fetch
   useEffect(() => {
-    fetchDocuments();
+    fetchDocuments(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle file upload
@@ -124,18 +152,18 @@ export default function Docs() {
     try {
       const fileArray = Array.from(files);
       const result = await uploadDocuments(fileArray);
-      
-      const uploadedCount = result.files_processed || 0;
+
+      const uploadedCount = (result as any)?.files_processed || 0;
       setUploadSuccess(`Successfully uploaded ${uploadedCount} file${uploadedCount !== 1 ? 's' : ''}`);
-      
+
       // Immediately re-fetch documents
       await fetchDocuments(false);
-      
+
       // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-      
+
       // Clear success message after 5 seconds
       setTimeout(() => setUploadSuccess(null), 5000);
     } catch (err) {
@@ -200,12 +228,12 @@ export default function Docs() {
   const isPolling = shouldPoll(documents);
   const hasIndexedDocs = documents.some(doc => doc.status === 'indexed');
   const isActive = uploading || fetching;
-  
+
   let bannerMessage = '';
   let bannerClass = '';
-  
+
   if (isPolling) {
-    bannerMessage = pollingTimeoutReached 
+    bannerMessage = pollingTimeoutReached
       ? 'Indexing is taking longer than expected. Documents may still be processing.'
       : 'Indexing documents...';
     bannerClass = 'banner-indexing';
@@ -292,6 +320,7 @@ export default function Docs() {
               {uploadError && <div className="error-message">{uploadError}</div>}
             </div>
 
+
             {/* Action Buttons */}
             <div className="action-buttons">
               <button
@@ -336,15 +365,16 @@ export default function Docs() {
                 </div>
                 {lastRefreshed && (
                   <div className="last-refreshed">
-                    Last refreshed: {lastRefreshed.toLocaleTimeString('en-US', { 
-                      hour: '2-digit', 
-                      minute: '2-digit', 
+                    Last refreshed: {lastRefreshed.toLocaleTimeString('en-US', {
+                      hour: '2-digit',
+                      minute: '2-digit',
                       second: '2-digit',
-                      hour12: false 
+                      hour12: false
                     })}
                   </div>
                 )}
               </div>
+
               {loading && documents.length === 0 ? (
                 <div className="loading">
                   <span className="spinner"></span>
@@ -366,7 +396,10 @@ export default function Docs() {
                         <th className="checkbox-col">
                           <input
                             type="checkbox"
-                            checked={selectedDocs.length > 0 && selectedDocs.length === documents.filter(d => d.status === 'indexed').length}
+                            checked={
+                              selectedDocs.length > 0 &&
+                              selectedDocs.length === documents.filter(d => d.status === 'indexed').length
+                            }
                             onChange={handleToggleAll}
                             disabled={documents.filter(d => d.status === 'indexed').length === 0}
                             title="Select/deselect all indexed documents"
@@ -413,6 +446,19 @@ export default function Docs() {
                   </table>
                 </div>
               )}
+            {/* Clear indexed docs button at the bottom of the table grid */}
+            <div style={{ marginTop: 20, textAlign: 'right' }}>
+              <button
+                className="btn-primary"
+                onClick={handlePurge}
+                disabled={purgeLoading || isActive || !hasIndexedDocs}
+                title={!hasIndexedDocs ? 'No indexed documents to clear' : 'Clear all indexed documents'}
+              >
+                {purgeLoading ? 'Clearing...' : 'Clear indexed docs'}
+              </button>
+              {purgeError && <div className="error-message">{purgeError}</div>}
+              {purgeSuccess && <div className="success-message">{purgeSuccess}</div>}
+            </div>
             </div>
           </div>
         </div>

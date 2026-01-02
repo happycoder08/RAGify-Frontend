@@ -129,6 +129,12 @@ function EvidenceItemComponent({ evidence, index, query }: EvidenceItemComponent
 }
 
 export default function EvidencePanel({ evidence, query, refused, sources }: EvidencePanelProps) {
+    // Defensive runtime assertion: every evidence item must have snippet and chunk_id
+    for (const ev of evidence) {
+      if (!ev.snippet || !ev.chunk_id) {
+        throw new Error('Evidence item missing snippet or chunk_id: ' + JSON.stringify(ev));
+      }
+    }
   // If refused, show banner and hide evidence
   if (refused) {
     return (

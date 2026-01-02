@@ -175,19 +175,6 @@
   color: #b5cea8;
 }
 
-.debug-code-block {
-  background-color: #2d2d30;
-  padding: 12px;
-  border-radius: 4px;
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
-  color: #d4d4d4;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  margin: 0;
-}
-
 .debug-drawer-footer {
   padding: 12px 20px;
   background-color: #252526;

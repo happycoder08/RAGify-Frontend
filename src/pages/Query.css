@@ -424,6 +424,18 @@
   opacity: 0.9;
 }
 
+.anchor-type-banner {
+  background-color: #f0f9ff;
+  border: 2px solid #bae6fd;
+  border-left: 4px solid #0ea5e9;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0c4a6e;
+}
+
 /* Evidence Panel Container */
 .evidence-panel-container {
   background: white;

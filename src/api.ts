@@ -10,7 +10,17 @@ import type {
   DocumentsListResponse,
   UploadResponse,
   ErrorResponse,
+  PurgeResponse,
 } from './contracts/types';
+/**
+ * Purge all indexed documents
+ * POST /api/documents/purge
+ */
+export async function purgeDocuments(): Promise<PurgeResponse> {
+  return apiFetch<PurgeResponse>('/api/documents/purge', {
+    method: 'POST',
+  });
+}
 
 // Get API base URL from environment variable
 // In dev mode: use empty string (relative URLs) - Vite proxy handles routing to backend
