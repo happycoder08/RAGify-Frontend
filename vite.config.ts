@@ -19,8 +19,8 @@ export default defineConfig(({ mode }) => {
             Connection: "keep-alive",
             Accept: "text/event-stream",
           },
-          configure: (proxy) => {
-            proxy.on("proxyReq", (proxyReq, req) => {
+          configure: (proxy: any) => {
+            proxy.on("proxyReq", (proxyReq: any, req: any) => {
               // Ensure SSE requests express intent
               if (req.url?.includes("/api/query")) {
                 proxyReq.setHeader("Accept", "text/event-stream");
@@ -29,7 +29,7 @@ export default defineConfig(({ mode }) => {
               }
             });
 
-            proxy.on("proxyRes", (proxyRes, req) => {
+            proxy.on("proxyRes", (proxyRes: any, req: any) => {
               if (req.url?.includes("/api/query")) {
                 // Nginx-specific but harmless elsewhere
                 proxyRes.headers["x-accel-buffering"] = "no";

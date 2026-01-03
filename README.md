@@ -1,73 +1,60 @@
-# React + TypeScript + Vite
+# RAGify Frontend (React + TypeScript + Vite)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This repository contains the RAGify frontend built with React, TypeScript and Vite. It includes the main UI for asking questions against uploaded documents, streaming SSE integration, and developer tooling for debugging.
 
-Currently, two official plugins are available:
+Quick start
+```
+# install
+npm install
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+# start dev server with HMR
+npm run dev
 
-## React Compiler
+# build production bundle
+npm run build
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+# preview production build locally
+npm run preview
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# run unit tests (Vitest)
+npx vitest run
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Environment flags
+- `VITE_DEMO_MODE=true` — enable demo mode UI (hides dev-only diagnostic banners but keeps Evidence/Sources visible). Can be set in a `.env.local` or exported before `npm run dev`.
+- `VITE_SHOW_DEVTOOLS=true` — enable dev tooling banners and debug counters. Also can be toggled via `?debug=1` URL param during development.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Frontend architecture & behavior
+- Pages: `src/pages/` contains the main views. `Query.tsx` is the primary interactive page for asking questions.
+- SSE: `src/sse.ts` provides `queryWithSSE` used by `Query.tsx` to stream tokens and receive final responses.
+- Types: API types are in `src/contracts/types.ts` and used across components.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Key UI controls added
+- Demo Control Bar (in `Query.tsx`, above the question input):
+  - Radio toggle: "All docs" vs "Selected docs".
+  - When "Selected docs" is chosen a multi-select appears listing uploaded documents (populated from `listDocuments`).
+  - On submit the request includes `doc_ids` only when "Selected docs" is enabled and at least one document is selected.
+
+- Evidence display (in `Query.tsx` + `EvidencePanel`):
+  - Default shows only the top evidence chunk.
+  - Small toggle link "Show all evidence (N)" reveals all evidence items (no internal changes to `EvidencePanel`).
+
+- Answer Mode badge (in `Query.tsx` header):
+  - `NOT FOUND` when `refused === true`.
+  - `EXTRACTED` when `debugInfo.pipeline_marker` starts with `EXTRACTOR_`.
+  - `CITED` otherwise.
+
+- Copy answer (in `Query.tsx` below the answer):
+  - "Copy answer" button copies `answerText`, appends source filenames and evidence headings, using `navigator.clipboard` and shows a transient "Copied!" indicator.
+
+Developer UX and gating
+- Dev-only banners (invariant checks, mismatch warnings, and debug counters) are gated by the `VITE_DEMO_MODE` flag — demo mode hides these while preserving the underlying dev checks and logic.
+
+Testing
+- Unit tests live under `src/pages/__tests__/`. Run them with `npx vitest run`.
+
+Notes
+- Styling for new controls uses existing theme classes in `src/pages/Query.css` to keep visual consistency (e.g. `.clear-button`, `.inline-link-btn`).
+- No dev code was removed — rendering is gated only, so toggles and flags control visibility.
+
+If you'd like, I can add a short "Frontend quick reference" section listing component entry points and data flow diagrams.

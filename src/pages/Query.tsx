@@ -40,6 +40,9 @@ export default function Query() {
   const [selectedDocIds, setSelectedDocIds] = useState<number[]>(() => getSelectedDocIds());
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [rawResponse, setRawResponse] = useState<string>('');
+  const [useSelectedDocs, setUseSelectedDocs] = useState(false);
+  const [showAllEvidence, setShowAllEvidence] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
 
   // Readiness check: fetch documents on mount and check for pending status
@@ -94,7 +97,7 @@ export default function Query() {
       top_k: 4,
       debug: debugDrawerOpen ? 2 : 0,
       stream: false,
-      ...(selectedDocIds.length > 0 && { doc_ids: selectedDocIds }),
+      ...(useSelectedDocs && selectedDocIds.length > 0 ? { doc_ids: selectedDocIds } : {}),
     };
 
     // DEV logging: print outgoing query payload and doc_ids status
@@ -221,14 +224,21 @@ export default function Query() {
 
   // Get scope display text
   const getScopeText = () => {
-    if (selectedDocIds.length === 0) {
-      return 'All docs';
-    }
+    if (!useSelectedDocs) return 'All documents';
+    if (selectedDocIds.length === 0) return '0 selected';
     const selectedDocs = documents.filter(d => selectedDocIds.includes(d.id));
-    if (selectedDocs.length === 1) {
-      return selectedDocs[0].filename;
+    if (selectedDocs.length === 1) return selectedDocs[0].filename;
+    return `${selectedDocs.length} selected`;
+  };
+
+  // Answer mode label: NOT FOUND | EXTRACTED | CITED
+  const getAnswerModeLabel = () => {
+    if (refused) return 'NOT FOUND';
+    const pipelineMarker = (debugInfo as any)?.pipeline_marker;
+    if (pipelineMarker && typeof pipelineMarker === 'string' && pipelineMarker.startsWith('EXTRACTOR_')) {
+      return 'EXTRACTED';
     }
-    return `${selectedDocs.length} documents`;
+    return 'CITED';
   };
 
   return (
@@ -277,6 +287,46 @@ export default function Query() {
         )}
 
         {/* Top Section: Question Input */}
+        {/* Demo Control Bar: scope toggle and selected-docs multi-select */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ marginRight: 12 }}>
+            <input
+              type="radio"
+              name="scope"
+              checked={!useSelectedDocs}
+              onChange={() => setUseSelectedDocs(false)}
+            />{' '}
+            All docs
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="scope"
+              checked={useSelectedDocs}
+              onChange={() => setUseSelectedDocs(true)}
+            />{' '}
+            Selected docs
+          </label>
+
+          {useSelectedDocs && (
+            <div style={{ marginTop: 8 }}>
+              <select
+                multiple
+                size={Math.min(6, Math.max(3, documents.length))}
+                value={selectedDocIds.map(String)}
+                onChange={(e) => {
+                  const opts = Array.from(e.target.selectedOptions).map(o => Number(o.value));
+                  setSelectedDocIds(opts);
+                }}
+                style={{ width: '100%', minWidth: 200 }}
+              >
+                {documents.map(d => (
+                  <option key={d.id} value={d.id}>{d.filename}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
         <div className="query-input-card">
           <form onSubmit={handleQuery} className="query-form">
             <div className="form-group">
@@ -339,7 +389,22 @@ export default function Query() {
           <div className="results-grid">
             {/* Middle: Answer Panel */}
             <div className="answer-panel">
-              <h2>Answer</h2>
+              <h2>
+                Answer
+                <span
+                  style={{
+                    marginLeft: 8,
+                    fontSize: 12,
+                    padding: '2px 8px',
+                    borderRadius: 9999,
+                    background: '#eee',
+                    fontWeight: 600,
+                    verticalAlign: 'middle',
+                  }}
+                >
+                  {getAnswerModeLabel()}
+                </span>
+              </h2>
               
               {/* Refusal Banner */}
               {refused && (
@@ -350,12 +415,12 @@ export default function Query() {
               )}
 
               {/* DEV diagnostic banners */}
-              {SHOW_DEVTOOLS && devInvariantMsg && (
+              {SHOW_DEVTOOLS && !DEMO_MODE && devInvariantMsg && (
                 <div className="dev-error-banner" style={{ background: '#ffdddd', padding: 8, marginBottom: 8, borderRadius: 6 }}>
                   <strong>{devInvariantMsg}</strong>
                 </div>
               )}
-              {SHOW_DEVTOOLS && devMismatchMsg && (
+              {SHOW_DEVTOOLS && !DEMO_MODE && devMismatchMsg && (
                 <div className="dev-mismatch-banner" style={{ background: '#fff3bf', padding: 8, marginBottom: 8, borderRadius: 6 }}>
                   <strong>{devMismatchMsg}</strong>
                 </div>
@@ -366,7 +431,40 @@ export default function Query() {
                 {streaming && <span className="cursor">▊</span>}
               </div>
 
-              {SHOW_DEVTOOLS && debugInfo && (
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  type="button"
+                  className="clear-button copy-answer-button"
+                  onClick={async () => {
+                    try {
+                      let text = answerText || '';
+                      if (sources && sources.length > 0) {
+                        const filenames = sources.map((s: any) => s.filename).filter(Boolean);
+                        if (filenames.length > 0) {
+                          text += '\n\nSources:\n' + filenames.join('\n');
+                        }
+                      }
+                      if (evidence && evidence.length > 0) {
+                        const headings = evidence.map((ev: any, i: number) => ev.heading || `Evidence ${i + 1}`);
+                        text += '\n\nEvidence headings:\n' + headings.join('\n');
+                      }
+
+                      await navigator.clipboard.writeText(text);
+                      setCopySuccess(true);
+                      setTimeout(() => setCopySuccess(false), 2000);
+                    } catch (err) {
+                      console.error('Copy failed', err);
+                    }
+                  }}
+                >
+                  Copy answer
+                </button>
+                {copySuccess && (
+                  <span style={{ color: 'green', fontSize: 12 }}>Copied!</span>
+                )}
+              </div>
+
+              {SHOW_DEVTOOLS && !DEMO_MODE && debugInfo && (
                 <div className="debug-info">
                   <strong>Debug:</strong> {debugInfo.evidence_count} evidence chunks, {debugInfo.sources_count} sources
                 </div>
@@ -382,8 +480,29 @@ export default function Query() {
                     {evidence[0].anchor_type === 'TIME' && '⏰ TIME ANCHOR DETECTED'}
                   </div>
                 )}
+
+                {/* Toggle to show all evidence or only top evidence */}
+                {evidence.length > 1 && !showAllEvidence && (
+                  <button
+                      type="button"
+                      onClick={() => setShowAllEvidence(true)}
+                      className="inline-link-btn"
+                    >
+                      Show all evidence ({evidence.length})
+                    </button>
+                )}
+                {evidence.length > 1 && showAllEvidence && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllEvidence(false)}
+                    className="inline-link-btn"
+                  >
+                    Show top evidence
+                  </button>
+                )}
+
                 <EvidencePanel 
-                  evidence={[evidence[0]]} 
+                  evidence={showAllEvidence ? evidence : [evidence[0]]} 
                   query={question}
                   refused={refused}
                   sources={sources}

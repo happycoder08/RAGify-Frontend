@@ -42,12 +42,12 @@ function detectAnchorType(text: string): 'time' | 'wifi' | 'none' {
   const t = (text || '').toLowerCase();
 
   // Time: 8:00 AM / 8 AM / 12:30 pm
-  const timeRe = /\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b/i;
-  if (timeRe.test(text)) return 'time';
+  const timeRe = /\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)/i;
+  if (timeRe.test(t)) return 'time';
 
   // WiFi: ssid/password patterns
   const wifiRe = /\b(wifi|wi-fi|ssid|password)\b/i;
-  if (wifiRe.test(text)) return 'wifi';
+  if (wifiRe.test(t)) return 'wifi';
 
   return 'none';
 }
@@ -60,32 +60,8 @@ function anchorBadgeLabel(type: 'time' | 'wifi' | 'none'): string | null {
 
 
 /**
- * Count matched query tokens in text
+ * (countMatches removed — was unused)
  */
-function countMatches(text: string, query: string): number {
-  if (!query.trim()) return 0;
-
-  const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'is', 'are', 'was', 'were', 'what', 'when', 'where', 'who', 'how', 'why']);
-  const tokens = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(t => t.length > 2 && !stopWords.has(t));
-
-  if (tokens.length === 0) return 0;
-
-  const lowerText = text.toLowerCase();
-  let count = 0;
-
-  for (const token of tokens) {
-    const regex = new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    const matches = lowerText.match(regex);
-    if (matches) {
-      count += matches.length;
-    }
-  }
-
-  return count;
-}
 
 interface EvidenceItemComponentProps {
   evidence: EvidenceItem;
@@ -96,7 +72,6 @@ interface EvidenceItemComponentProps {
 function EvidenceItemComponent({ evidence, index, query }: EvidenceItemComponentProps) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
-  const matchCount = countMatches(evidence.snippet, query);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
