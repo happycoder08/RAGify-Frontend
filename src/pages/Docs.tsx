@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { listDocuments, uploadDocuments, purgeDocuments } from '../api';
+import { consumeDemoTokenFromUrl } from '../utils/demoToken';
 import type { DocumentRecord } from '../contracts/types';
 import { getSelectedDocIds, toggleDocId, clearSelection } from '../utils/documentSelection';
 import './Docs.css';
@@ -137,6 +138,11 @@ export default function Docs() {
 
   // Initial fetch
   useEffect(() => {
+    // Consume demo token from URL (if present) on initial mount of /docs
+    try {
+      consumeDemoTokenFromUrl();
+    } catch {}
+
     fetchDocuments(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
