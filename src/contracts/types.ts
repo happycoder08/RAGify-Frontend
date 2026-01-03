@@ -60,6 +60,12 @@ export interface DebugInfo {
   grounding_gate?: Record<string, any> | null;
   selected_chunks?: any[] | null;
   context?: string | null;
+  total_retrieved?: number | null;
+  k_final?: number | null;
+  selected_chunk_ids?: string[] | null;
+  selected_headings?: string[] | null;
+  context_text_chars?: number | null;
+  context_chunks_count?: number | null;
 }
 
 export interface QueryFinalResponse {

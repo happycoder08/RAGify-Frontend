@@ -38,8 +38,8 @@ async function apiFetch<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = getToken();
-  const headers: HeadersInit = {
-    ...options.headers,
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string>),
   };
 
   if (token) {
@@ -124,91 +124,201 @@ export type SSEEvent =
  * 
  * DO NOT use regex parsing - parse event: and data: lines explicitly.
  */
-export async function queryWithSSE(
-  request: QueryRequest,
-  onEvent: (event: SSEEvent) => void,
-  onError?: (error: Error) => void
-): Promise<void> {
-  const token = getToken();
-  
+type QueryWithSSECallbacks = {
+  onToken?: (e: SSETokenEvent) => void;
+  onDebug?: (e: SSEDebugEvent) => void;
+  onFinal?: (e: SSEFinalEvent) => void;
+  onSSEErrorEvent?: (e: SSEErrorEvent) => void; // error event coming from server
+  onError?: (err: Error) => void;              // transport/parse/etc
+  onOpen?: () => void;
+  onClose?: () => void;
+};
+
+type QueryWithSSEOptions = {
+  signal?: AbortSignal;       // caller-controlled abort
+  timeoutMs?: number;         // default e.g. 30000
+  stopOnFinal?: boolean;      // default true
+};
+
+function combineSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+  if (!a) return b;
+  if (!b) return a;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-    onError?.(new Error('Query timeout after 30 seconds'));
-  }, 30000); // 30 second timeout
+  const onAbort = () => controller.abort();
+  if (a.aborted || b.aborted) controller.abort();
+  a.addEventListener("abort", onAbort, { once: true });
+  b.addEventListener("abort", onAbort, { once: true });
+  return controller.signal;
+}
 
-  try {
-    const response = await fetch(`${API_URL}/api/query`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(request),
-      signal: controller.signal,
-    });
+/**
+ * Spec-correct SSE parsing:
+ * - Events separated by blank line
+ * - Multiple data: lines allowed (join with \n)
+ * - Ignores comments
+ * - Supports CRLF
+ */
+export function queryWithSSE(
+  request: QueryRequest,
+  cb: QueryWithSSECallbacks,
+  opts: QueryWithSSEOptions = {}
+): { abort: () => void; promise: Promise<void> } {
+  const token = getToken();
+  const controller = new AbortController();
+  const signal = combineSignals(controller.signal, opts.signal);
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  const timeoutMs = opts.timeoutMs ?? 30000;
+  let timeoutId: number | undefined;
+  let stopped = false;
+
+  const abort = () => controller.abort();
+
+  const promise = (async () => {
+    if (!token) {
+      cb.onError?.(new Error("Missing auth token"));
+      return;
     }
 
-    if (!response.body) {
-      throw new Error('No response body');
+    if (timeoutMs > 0) {
+      timeoutId = window.setTimeout(() => {
+        controller.abort();
+        if (!stopped) cb.onError?.(new Error(`Query timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let currentEvent = '';
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
-    // Event-based SSE parsing
-    while (true) {
-      const { done, value } = await reader.read();
-      
-      if (done) break;
+    try {
+      const response = await fetch(`${API_URL}/api/query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(request),
+        signal,
+      });
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      if (!response.body) {
+        throw new Error("No response body");
+      }
 
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          currentEvent = line.substring(7).trim();
-        } else if (line.startsWith('data: ')) {
-          const dataStr = line.substring(6);
-          try {
-            const data = JSON.parse(dataStr);
-            
-            // Emit event based on type
-            if (currentEvent === 'token') {
-              onEvent({ type: 'token', data: data as SSETokenEvent });
-            } else if (currentEvent === 'debug') {
-              onEvent({ type: 'debug', data: data as SSEDebugEvent });
-            } else if (currentEvent === 'final') {
-              onEvent({ type: 'final', data: data as SSEFinalEvent });
-              clearTimeout(timeoutId);
-              return; // Stop on final event
-            } else if (currentEvent === 'error') {
-              onEvent({ type: 'error', data: data as SSEErrorEvent });
-              clearTimeout(timeoutId);
-              throw new Error(data.detail || 'Query error');
-            }
-            
-            currentEvent = ''; // Reset for next event
-          } catch (parseError) {
-            console.error('Failed to parse SSE data:', dataStr, parseError);
+      cb.onOpen?.();
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+
+      let buffer = "";
+
+      // current event frame being built
+      let eventName = "";
+      let dataLines: string[] = [];
+
+      const dispatch = () => {
+        if (stopped) return;
+        if (!eventName && dataLines.length === 0) return;
+
+        const dataStr = dataLines.join("\n");
+        dataLines = [];
+
+        // Default event type if omitted
+        const type = eventName || "message";
+        eventName = "";
+
+        if (!dataStr) return;
+
+        let payload: any;
+        try {
+          payload = JSON.parse(dataStr);
+        } catch (e) {
+          // Don’t kill the stream on one bad frame — surface it
+          if (!stopped) cb.onError?.(new Error(`Failed to parse SSE JSON for event "${type}": ${dataStr.slice(0, 200)}`));
+          return;
+        }
+
+        if (type === "token") cb.onToken?.(payload as SSETokenEvent);
+        else if (type === "debug") cb.onDebug?.(payload as SSEDebugEvent);
+        else if (type === "final") cb.onFinal?.(payload as SSEFinalEvent);
+        else if (type === "error") cb.onSSEErrorEvent?.(payload as SSEErrorEvent);
+        // else ignore unknown events
+
+        if ((opts.stopOnFinal ?? true) && type === "final") {
+          // hard stop: cancel reader + abort fetch
+          stopped = true;
+          try { reader?.cancel(); } catch {}
+          controller.abort();
+        }
+
+        if (type === "error") {
+          // server signaled an error; stop and surface
+          try { reader?.cancel(); } catch {}
+          controller.abort();
+          const detail = (payload && (payload.detail || payload.message)) ? String(payload.detail || payload.message) : "Query error";
+          if (!stopped) cb.onError?.(new Error(detail));
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Split into lines (support \n, keep \r out)
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (let rawLine of lines) {
+          const line = rawLine.replace(/\r$/, "");
+
+          // blank line = end of event frame
+          if (line === "") {
+            dispatch();
+            continue;
           }
+
+          // comment/keepalive
+          if (line.startsWith(":")) continue;
+
+          if (line.startsWith("event:")) {
+            eventName = line.slice(6).trim();
+            continue;
+          }
+
+          if (line.startsWith("data:")) {
+            // spec: "data:" may be followed by optional space
+            const v = line.slice(5);
+            dataLines.push(v.startsWith(" ") ? v.slice(1) : v);
+            continue;
+          }
+
+          // Optional: handle id:, retry: if you ever need it
         }
       }
+
+      // flush any last frame if stream ended without blank line
+      dispatch();
+      stopped = true;
+
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        // treat as normal cancellation unless timeout already reported
+        // (avoid double-reporting)
+        // you can choose to call onClose only
+      } else {
+        if (!stopped) cb.onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    } finally {
+      if (timeoutId) window.clearTimeout(timeoutId);
+      cb.onClose?.();
+      try { reader?.cancel(); } catch {}
     }
-  } catch (error) {
-    clearTimeout(timeoutId);
-    if (error instanceof Error && error.name === 'AbortError') {
-      onError?.(new Error('Request cancelled'));
-    } else {
-      onError?.(error as Error);
-    }
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  })();
+
+  return { abort, promise };
 }

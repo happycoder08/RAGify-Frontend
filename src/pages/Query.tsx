@@ -11,6 +11,11 @@ import './Query.css';
 // Demo mode configuration from environment
 const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
 
+// Dev tools flag from environment or URL param
+const SHOW_DEVTOOLS = import.meta.env.VITE_SHOW_DEVTOOLS === 'true' || 
+  new URLSearchParams(window.location.search).get('debug') === '1' ||
+  (globalThis as any).__TEST_SHOW_DEVTOOLS__ === true;
+
 // Simple in-memory cache for document status (10 second TTL)
 let docStatusCache: { hasPending: boolean; timestamp: number } | null = null;
 const CACHE_TTL = 10000; // 10 seconds
@@ -122,9 +127,38 @@ export default function Query() {
           setAnswerText(data.answer);
           setEvidence(data.evidence);
           setSources(data.sources);
-          setDebugInfo(data.debug_info ?? debugInfo);
+          setDebugInfo(prev => data.debug_info ?? prev);
           setStreaming(false);
           abortRef.current = null;
+
+          // DEV validation: check invariants
+          if (!data.evidence || !data.sources || data.evidence.length === 0 || data.sources.length === 0) {
+            setDevInvariantMsg('DEV ERROR: final payload missing evidence or sources');
+          } else {
+            setDevInvariantMsg(null);
+          }
+
+          // DEV validation: check for answer/evidence mismatch
+          if (data.answer && data.evidence && data.evidence.length > 0) {
+            const answerLower = data.answer.toLowerCase();
+            const hasTimeInAnswer = /\b\d{1,2}:\d{2}\b/.test(answerLower) || /\b\d{1,2}(am|pm)\b/i.test(answerLower);
+            const hasTimeInEvidence = data.evidence.some(ev => 
+              ev.snippet && (/\b\d{1,2}:\d{2}\b/.test(ev.snippet) || /\b\d{1,2}(am|pm)\b/i.test(ev.snippet))
+            );
+            if (hasTimeInAnswer && !hasTimeInEvidence) {
+              setDevMismatchMsg('Answer/Evidence mismatch');
+            } else {
+              setDevMismatchMsg(null);
+            }
+          } else {
+            setDevMismatchMsg(null);
+          }
+
+          // DEV validation: check canonical refusal
+          const canonicalRefusal = 'The document does not specify this.';
+          if (!data.refused && data.answer === canonicalRefusal) {
+            setDevInvariantMsg('DEV ERROR: final.answer equals canonical refusal while refused=false');
+          }
         },
         // Rule 4: On 'error': show error state and stop.
         onError: (err) => {
@@ -316,12 +350,12 @@ export default function Query() {
               )}
 
               {/* DEV diagnostic banners */}
-              {devInvariantMsg && (
+              {SHOW_DEVTOOLS && devInvariantMsg && (
                 <div className="dev-error-banner" style={{ background: '#ffdddd', padding: 8, marginBottom: 8, borderRadius: 6 }}>
                   <strong>{devInvariantMsg}</strong>
                 </div>
               )}
-              {devMismatchMsg && (
+              {SHOW_DEVTOOLS && devMismatchMsg && (
                 <div className="dev-mismatch-banner" style={{ background: '#fff3bf', padding: 8, marginBottom: 8, borderRadius: 6 }}>
                   <strong>{devMismatchMsg}</strong>
                 </div>
@@ -332,7 +366,7 @@ export default function Query() {
                 {streaming && <span className="cursor">▊</span>}
               </div>
 
-              {debugInfo && (
+              {SHOW_DEVTOOLS && debugInfo && (
                 <div className="debug-info">
                   <strong>Debug:</strong> {debugInfo.evidence_count} evidence chunks, {debugInfo.sources_count} sources
                 </div>
@@ -361,7 +395,7 @@ export default function Query() {
       </div>
 
       {/* Temporary Debug Panel */}
-      {rawResponse && (
+      {SHOW_DEVTOOLS && rawResponse && (
         <div style={{ marginTop: '20px', padding: '10px', border: '1px solid #ccc', backgroundColor: '#f9f9f9' }}>
           <h3>Raw Response JSON</h3>
           <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px' }}>{rawResponse}</pre>
@@ -369,11 +403,13 @@ export default function Query() {
       )}
 
       {/* Debug Drawer */}
-      <DebugDrawer
-        isOpen={debugDrawerOpen}
-        onToggle={() => setDebugDrawerOpen(!debugDrawerOpen)}
-        debugInfo={debugInfo}
-      />
+      {SHOW_DEVTOOLS && (
+        <DebugDrawer
+          isOpen={debugDrawerOpen}
+          onToggle={() => setDebugDrawerOpen(!debugDrawerOpen)}
+          debugInfo={debugInfo}
+        />
+      )}
     </div>
   );
 }

@@ -38,6 +38,27 @@ function highlightText(text: string, query: string): React.ReactNode[] {
   });
 }
 
+function detectAnchorType(text: string): 'time' | 'wifi' | 'none' {
+  const t = (text || '').toLowerCase();
+
+  // Time: 8:00 AM / 8 AM / 12:30 pm
+  const timeRe = /\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b/i;
+  if (timeRe.test(text)) return 'time';
+
+  // WiFi: ssid/password patterns
+  const wifiRe = /\b(wifi|wi-fi|ssid|password)\b/i;
+  if (wifiRe.test(text)) return 'wifi';
+
+  return 'none';
+}
+
+function anchorBadgeLabel(type: 'time' | 'wifi' | 'none'): string | null {
+  if (type === 'time') return 'Time anchor detected';
+  if (type === 'wifi') return 'WiFi anchor detected';
+  return null;
+}
+
+
 /**
  * Count matched query tokens in text
  */
@@ -94,9 +115,11 @@ function EvidenceItemComponent({ evidence, index, query }: EvidenceItemComponent
         <div className="evidence-title">
           {evidence.heading && <span className="evidence-heading">{evidence.heading}</span>}
           {!evidence.heading && <span className="evidence-heading">Evidence {index + 1}</span>}
-          {matchCount > 0 && (
-            <span className="match-badge">Time anchor detected</span>
-          )}
+          {(() => {
+            const anchorType = detectAnchorType(evidence.snippet);
+            const label = anchorBadgeLabel(anchorType);
+            return label ? <span className="match-badge">{label}</span> : null;
+          })()}
         </div>
         <div className="evidence-actions">
           <button 

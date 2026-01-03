@@ -51,6 +51,12 @@ export interface DebugInfo {
   grounding_gate?: Record<string, unknown>;
   selected_chunks?: Array<Record<string, unknown>>;
   context?: string;
+  total_retrieved?: number;
+  k_final?: number;
+  selected_chunk_ids?: string[];
+  selected_headings?: string[];
+  context_text_chars?: number;
+  context_chunks_count?: number;
 }
 
 export interface QueryFinalResponse {

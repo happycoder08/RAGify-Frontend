@@ -1,13 +1,29 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { vi } from 'vitest'
-import Query from '../Query'
 import * as sse from '../../sse'
 import * as api from '../../api'
 import { MemoryRouter } from 'react-router-dom'
 
+// Mock import.meta.env before importing Query
+vi.mock('import.meta.env', () => ({
+  VITE_DEMO_MODE: 'true',
+  VITE_SHOW_DEVTOOLS: 'true'
+}), { virtual: true })
+
 // Mock listDocuments to avoid network calls
 vi.mock('../../api')
+
+// Enable dev tools for tests
+;(globalThis as any).__TEST_SHOW_DEVTOOLS__ = true
+
+import Query from '../Query'
+
+// Mock import.meta.env for SHOW_DEVTOOLS
+vi.mock('import.meta.env', () => ({
+  VITE_DEMO_MODE: 'true',
+  VITE_SHOW_DEVTOOLS: 'true'
+}), { virtual: true })
 
 describe('Query SSE behavior', () => {
   beforeEach(() => {
@@ -24,11 +40,11 @@ describe('Query SSE behavior', () => {
       setTimeout(() => handlers.onToken?.('8:00 '), 30)
       // then final (refused=true)
       setTimeout(() => handlers.onFinal?.({
-        answer: 'ARRIVE AT 8:00 AM',
+        answer: 'The document does not specify this.',
         refused: true,
         refusal_reason: 'No matching info',
-        evidence: [{ chunk_id: '20_Employee_Onboarding_Guide_1.txt_30', snippet: '...'}],
-        sources: [{ filename: 'Employee_Onboarding_Guide_1.txt'}]
+        evidence: [],
+        sources: []
       }), 50)
 
       return { abort: () => {}, done: Promise.resolve() }
