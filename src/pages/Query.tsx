@@ -4,6 +4,7 @@ import { queryWithSSE } from '../sse';
 import { listDocuments } from '../api';
 import type { DebugInfo, DocumentRecord } from '../contracts/types';
 import { getSelectedDocIds } from '../utils/documentSelection';
+import { computeAnswerMode, labelForMode, tooltipForMode } from '../utils/computeAnswerMode';
 import EvidencePanel from './EvidencePanel';
 import DebugDrawer from './DebugDrawer';
 import './Query.css';
@@ -231,15 +232,14 @@ export default function Query() {
     return `${selectedDocs.length} selected`;
   };
 
-  // Answer mode label: NOT FOUND | EXTRACTED | CITED
-  const getAnswerModeLabel = () => {
-    if (refused) return 'NOT FOUND';
-    const pipelineMarker = (debugInfo as any)?.pipeline_marker;
-    if (pipelineMarker && typeof pipelineMarker === 'string' && pipelineMarker.startsWith('EXTRACTOR_')) {
-      return 'EXTRACTED';
-    }
-    return 'CITED';
-  };
+  // Derived answer mode (null-safe)
+  const answerMode = computeAnswerMode({
+    refused,
+    pipeline_marker: (debugInfo as any)?.pipeline_marker ?? undefined,
+    debug_info: debugInfo,
+  });
+  const answerModeLabel = labelForMode(answerMode);
+  const answerModeTooltip = tooltipForMode(answerMode);
 
   return (
     <div className="query-page">
@@ -392,6 +392,7 @@ export default function Query() {
               <h2>
                 Answer
                 <span
+                  title={answerModeTooltip}
                   style={{
                     marginLeft: 8,
                     fontSize: 12,
@@ -402,7 +403,7 @@ export default function Query() {
                     verticalAlign: 'middle',
                   }}
                 >
-                  {getAnswerModeLabel()}
+                  {answerModeLabel}
                 </span>
               </h2>
               
