@@ -163,6 +163,18 @@
   font-weight: 400;
 }
 
+/* Demo access badge (subtle pill) */
+.demo-access-badge {
+  margin-left: 8px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: #f3f4ff;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #e6e9ff;
+}
+
 /* Left Column */
 .left-column {
   display: flex;

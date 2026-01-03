@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { listDocuments, uploadDocuments, purgeDocuments } from '../api';
-import { consumeDemoTokenFromUrl } from '../utils/demoToken';
+import { consumeDemoTokenFromUrl, getDemoToken } from '../utils/demoToken';
 import type { DocumentRecord } from '../contracts/types';
 import { getSelectedDocIds, toggleDocId, clearSelection } from '../utils/documentSelection';
 import './Docs.css';
 
 export default function Docs() {
   const navigate = useNavigate();
+
+  const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
 
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +29,7 @@ export default function Docs() {
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
   const [selectedDocs, setSelectedDocs] = useState<number[]>(() => getSelectedDocIds());
+  const [demoToken, setDemoToken] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingIntervalRef = useRef<number | null>(null);
@@ -140,8 +143,11 @@ export default function Docs() {
   useEffect(() => {
     // Consume demo token from URL (if present) on initial mount of /docs
     try {
-      consumeDemoTokenFromUrl();
-    } catch {}
+      const t = consumeDemoTokenFromUrl();
+      setDemoToken(t ?? getDemoToken());
+    } catch {
+      setDemoToken(getDemoToken());
+    }
 
     fetchDocuments(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -264,6 +270,14 @@ export default function Docs() {
           <div className="step-header">
             <span className="step-badge">Step 1 of 2</span>
             <h1>Upload Documents</h1>
+            {(DEMO_MODE || demoToken) && (
+              <span
+                className="demo-access-badge"
+                title="This is demo access, not real authentication."
+              >
+                {demoToken ? 'Demo access link' : 'Demo mode'}
+              </span>
+            )}
           </div>
           <p className="step-description">
             Upload your documents to build your knowledge base. Once indexed, you can ask questions in the Chat.
