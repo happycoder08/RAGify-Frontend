@@ -1,18 +1,19 @@
 export type AnswerMode = 'NOT_FOUND' | 'EXTRACTED' | 'CITED';
 
-export function computeAnswerMode(input: { refused: boolean; pipeline_marker?: string | null; debug_info?: any }): AnswerMode {
-  try {
-    if (input.refused === true) return 'NOT_FOUND';
+export function computeAnswerMode(input: {
+  refused: boolean;
+  pipeline_marker?: string | null;
+  debug_info?: any;
+}): AnswerMode {
+  if (input.refused === true) return 'NOT_FOUND';
 
-    const pm = input.pipeline_marker ?? (input.debug_info && input.debug_info.pipeline_marker) ?? null;
-    if (typeof pm === 'string' && pm.startsWith('EXTRACTOR_')) return 'EXTRACTED';
+  const pm = input.pipeline_marker;
+  if (typeof pm === 'string' && pm.startsWith('EXTRACTOR_')) return 'EXTRACTED';
 
-    if (input.debug_info && input.debug_info.extractor_used === true) return 'EXTRACTED';
+  const fallbackPm = input.debug_info?.pipeline_marker;
+  if (typeof fallbackPm === 'string' && fallbackPm.startsWith('EXTRACTOR_')) return 'EXTRACTED';
 
-    return 'CITED';
-  } catch {
-    return 'CITED';
-  }
+  return 'CITED';
 }
 
 export function labelForMode(mode: AnswerMode): 'NOT FOUND' | 'EXTRACTED' | 'CITED' {

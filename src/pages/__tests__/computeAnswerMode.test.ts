@@ -21,9 +21,9 @@ describe('computeAnswerMode', () => {
     expect(mode).toBe('EXTRACTED');
   });
 
-  it('returns EXTRACTED when debug_info.extractor_used === true', () => {
+  it('does not treat debug_info.extractor_used as authoritative (CITED without pipeline marker)', () => {
     const mode = computeAnswerMode({ refused: false, debug_info: { extractor_used: true } });
-    expect(mode).toBe('EXTRACTED');
+    expect(mode).toBe('CITED');
   });
 
   it('returns CITED by default', () => {

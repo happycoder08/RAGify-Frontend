@@ -9,12 +9,99 @@ import EvidencePanel from './EvidencePanel';
 import DebugDrawer from './DebugDrawer';
 import './Query.css';
 
-// Demo mode configuration from environment
-const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
+type BuildCopyTextArgs = {
+  lastQuery: string;
+  answerModeLabel: string;
+  answerText: string;
+  sources: any[];
+  evidence: any[];
+};
 
-// Dev tools flag from environment or URL param
-const SHOW_DEVTOOLS = import.meta.env.VITE_SHOW_DEVTOOLS === 'true' || 
-  new URLSearchParams(window.location.search).get('debug') === '1' ||
+function buildCopyText({ lastQuery, answerModeLabel, answerText, sources, evidence }: BuildCopyTextArgs): string {
+  const lines: string[] = [];
+
+  lines.push(`Question: ${lastQuery || ''}`);
+  lines.push(`Answer Mode: ${answerModeLabel || ''}`);
+  lines.push(`Answer: ${answerText || ''}`);
+  lines.push('');
+
+  lines.push('Sources:');
+  const filenames = (sources || [])
+    .map((s: any) => s && s.filename)
+    .filter((name: any) => Boolean(name));
+  if (filenames.length > 0) {
+    filenames.forEach((name: string) => lines.push(name));
+  } else {
+    lines.push('None');
+  }
+  lines.push('');
+
+  lines.push('Evidence:');
+  const evidenceItems = Array.isArray(evidence) ? evidence : [];
+  if (evidenceItems.length === 0) {
+    lines.push('None');
+  } else {
+    evidenceItems.forEach((ev: any, index: number) => {
+      if (index > 0) {
+        lines.push('---');
+      }
+      const heading = ev && ev.heading ? String(ev.heading) : `Evidence ${index + 1}`;
+      const chunkId = ev && ev.chunk_id ? String(ev.chunk_id) : 'unknown';
+      const snippet = ev && ev.snippet ? String(ev.snippet) : '';
+
+      lines.push(`[${index + 1}] ${heading} (chunk_id=${chunkId})`);
+      if (snippet) {
+        lines.push(snippet);
+      }
+    });
+  }
+
+  return lines.join('\n');
+}
+
+async function copyTextWithFallback(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    throw new Error('Clipboard API not available');
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    try {
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!successful) {
+        throw new Error('Fallback copy failed');
+      }
+    } catch (err) {
+      document.body.removeChild(textarea);
+      throw err;
+    }
+  }
+}
+
+// Demo mode configuration from environment
+const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
+const DEMO_MODE = isDemoMode;
+
+// Dev tools flag from environment or URL param (hardened for production)
+const envShowDevTools = import.meta.env.VITE_SHOW_DEVTOOLS === 'true';
+const canUseUrlDebug = import.meta.env.DEV || envShowDevTools;
+const urlDebug = canUseUrlDebug && new URLSearchParams(window.location.search).get('debug') === '1';
+
+const SHOW_DEVTOOLS =
+  import.meta.env.DEV ||
+  envShowDevTools ||
+  urlDebug ||
   (globalThis as any).__TEST_SHOW_DEVTOOLS__ === true;
 
 // Simple in-memory cache for document status (10 second TTL)
@@ -42,8 +129,10 @@ export default function Query() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [rawResponse, setRawResponse] = useState<string>('');
   const [useSelectedDocs, setUseSelectedDocs] = useState(false);
-  const [showAllEvidence, setShowAllEvidence] = useState(false);
+  
   const [copySuccess, setCopySuccess] = useState(false);
+  const [hasFinal, setHasFinal] = useState(false);
+  const [responsePipelineMarker, setResponsePipelineMarker] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
   // Readiness check: fetch documents on mount and check for pending status
@@ -82,6 +171,7 @@ export default function Query() {
     if (!questionText.trim()) return;
 
     setStreaming(true);
+    setHasFinal(false);
     setAnswerText('');
     answerBufferRef.current = '';
     setDebugInfo(null);
@@ -96,7 +186,7 @@ export default function Query() {
       question: questionText.trim(),
       mode: 'full' as const,
       top_k: 4,
-      debug: debugDrawerOpen ? 2 : 0,
+      debug: debugDrawerOpen ? 2 : (SHOW_DEVTOOLS ? 1 : 0),
       stream: false,
       ...(useSelectedDocs && selectedDocIds.length > 0 ? { doc_ids: selectedDocIds } : {}),
     };
@@ -132,6 +222,12 @@ export default function Query() {
           setEvidence(data.evidence);
           setSources(data.sources);
           setDebugInfo(prev => data.debug_info ?? prev);
+          // capture pipeline_marker if present in response (defensive)
+          try {
+            setResponsePipelineMarker(((data as any).pipeline_marker as string) ?? null);
+          } catch {
+            setResponsePipelineMarker(null);
+          }
           setStreaming(false);
           abortRef.current = null;
 
@@ -163,6 +259,8 @@ export default function Query() {
           if (!data.refused && data.answer === canonicalRefusal) {
             setDevInvariantMsg('DEV ERROR: final.answer equals canonical refusal while refused=false');
           }
+
+          setHasFinal(true);
         },
         // Rule 4: On 'error': show error state and stop.
         onError: (err) => {
@@ -210,6 +308,7 @@ export default function Query() {
     setStreaming(false);
     setDevInvariantMsg(null);
     setDevMismatchMsg(null);
+    setHasFinal(false);
   };
 
   const handleRetry = () => {
@@ -235,7 +334,7 @@ export default function Query() {
   // Derived answer mode (null-safe)
   const answerMode = computeAnswerMode({
     refused,
-    pipeline_marker: (debugInfo as any)?.pipeline_marker ?? undefined,
+    pipeline_marker: responsePipelineMarker ?? undefined,
     debug_info: debugInfo,
   });
   const answerModeLabel = labelForMode(answerMode);
@@ -391,20 +490,22 @@ export default function Query() {
             <div className="answer-panel">
               <h2>
                 Answer
-                <span
-                  title={answerModeTooltip}
-                  style={{
-                    marginLeft: 8,
-                    fontSize: 12,
-                    padding: '2px 8px',
-                    borderRadius: 9999,
-                    background: '#eee',
-                    fontWeight: 600,
-                    verticalAlign: 'middle',
-                  }}
-                >
-                  {answerModeLabel}
-                </span>
+                {hasFinal && (
+                  <span
+                    title={answerModeTooltip}
+                    style={{
+                      marginLeft: 8,
+                      fontSize: 12,
+                      padding: '2px 8px',
+                      borderRadius: 9999,
+                      background: '#eee',
+                      fontWeight: 600,
+                      verticalAlign: 'middle',
+                    }}
+                  >
+                    {answerModeLabel}
+                  </span>
+                )}
               </h2>
               
               {/* Refusal Banner */}
@@ -437,28 +538,24 @@ export default function Query() {
                   type="button"
                   className="clear-button copy-answer-button"
                   onClick={async () => {
-                    try {
-                      let text = answerText || '';
-                      if (sources && sources.length > 0) {
-                        const filenames = sources.map((s: any) => s.filename).filter(Boolean);
-                        if (filenames.length > 0) {
-                          text += '\n\nSources:\n' + filenames.join('\n');
-                        }
-                      }
-                      if (evidence && evidence.length > 0) {
-                        const headings = evidence.map((ev: any, i: number) => ev.heading || `Evidence ${i + 1}`);
-                        text += '\n\nEvidence headings:\n' + headings.join('\n');
-                      }
+                    const text = buildCopyText({
+                      lastQuery,
+                      answerModeLabel,
+                      answerText,
+                      sources: sources || [],
+                      evidence: evidence || [],
+                    });
 
-                      await navigator.clipboard.writeText(text);
+                    try {
+                      await copyTextWithFallback(text);
                       setCopySuccess(true);
-                      setTimeout(() => setCopySuccess(false), 2000);
+                      setTimeout(() => setCopySuccess(false), 1500);
                     } catch (err) {
                       console.error('Copy failed', err);
                     }
                   }}
                 >
-                  Copy answer
+                  Copy answer + citations
                 </button>
                 {copySuccess && (
                   <span style={{ color: 'green', fontSize: 12 }}>Copied!</span>
@@ -472,38 +569,18 @@ export default function Query() {
               )}
             </div>
 
-            {/* Right/Below: Evidence Panel (hide if refused) */}
-            {!refused && evidence && evidence.length > 0 && (
+            {/* Right/Below: Evidence Panel (render only after final) */}
+            {hasFinal && !refused && evidence && (
               <div className="evidence-panel-container">
-                {evidence[0].anchor_type && (
+                {evidence.length > 0 && evidence[0].anchor_type && (
                   <div className="anchor-type-banner">
                     {evidence[0].anchor_type === 'WIFI' && '🔗 WIFI ANCHOR DETECTED'}
                     {evidence[0].anchor_type === 'TIME' && '⏰ TIME ANCHOR DETECTED'}
                   </div>
                 )}
 
-                {/* Toggle to show all evidence or only top evidence */}
-                {evidence.length > 1 && !showAllEvidence && (
-                  <button
-                      type="button"
-                      onClick={() => setShowAllEvidence(true)}
-                      className="inline-link-btn"
-                    >
-                      Show all evidence ({evidence.length})
-                    </button>
-                )}
-                {evidence.length > 1 && showAllEvidence && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAllEvidence(false)}
-                    className="inline-link-btn"
-                  >
-                    Show top evidence
-                  </button>
-                )}
-
                 <EvidencePanel 
-                  evidence={showAllEvidence ? evidence : [evidence[0]]} 
+                  evidence={evidence}
                   query={question}
                   refused={refused}
                   sources={sources}
@@ -515,7 +592,7 @@ export default function Query() {
       </div>
 
       {/* Temporary Debug Panel */}
-      {SHOW_DEVTOOLS && rawResponse && (
+      {SHOW_DEVTOOLS && !DEMO_MODE && rawResponse && (
         <div style={{ marginTop: '20px', padding: '10px', border: '1px solid #ccc', backgroundColor: '#f9f9f9' }}>
           <h3>Raw Response JSON</h3>
           <pre style={{ whiteSpace: 'pre-wrap', fontSize: '12px' }}>{rawResponse}</pre>

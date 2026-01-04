@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { EvidenceItem, SourceItem } from '../contracts/types';
 import './EvidencePanel.css';
 
@@ -127,12 +127,12 @@ function EvidenceItemComponent({ evidence, index, query }: EvidenceItemComponent
 }
 
 export default function EvidencePanel({ evidence, query, refused, sources }: EvidencePanelProps) {
-    // Defensive runtime assertion: every evidence item must have snippet and chunk_id
-    for (const ev of evidence) {
-      if (!ev.snippet || !ev.chunk_id) {
-        throw new Error('Evidence item missing snippet or chunk_id: ' + JSON.stringify(ev));
-      }
-    }
+  // Demo-safe validation: check for malformed evidence items
+  const malformed = evidence.some(ev => !ev.snippet || !ev.chunk_id);
+  if (malformed && import.meta.env.DEV) {
+    // In dev mode still throw to surface issues during development
+    throw new Error('Evidence item missing snippet or chunk_id: ' + JSON.stringify(evidence.find(ev => !ev.snippet || !ev.chunk_id)));
+  }
   // If refused, show banner and hide evidence
   if (refused) {
     return (
@@ -148,22 +148,85 @@ export default function EvidencePanel({ evidence, query, refused, sources }: Evi
     );
   }
 
-  if (evidence.length === 0) return null;
+  // If no evidence and not refused, show calm empty state
+  if (evidence.length === 0) {
+    return (
+      <div className="evidence-section">
+        <h3>Evidence (0)</h3>
+        <div className="evidence-empty">No evidence returned.</div>
+      </div>
+    );
+  }
+
+  // Collapse/expand state for evidence list
+  const [showAll, setShowAll] = useState(false);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const prevScrollTopRef = useRef<number | null>(null);
+  const prevScrollElementRef = useRef<HTMLElement | null>(null);
+
+  const getScrollableAncestor = (el: HTMLElement | null): HTMLElement | null => {
+    let cur: HTMLElement | null = el;
+    while (cur) {
+      if (cur.scrollHeight > cur.clientHeight) return cur;
+      cur = cur.parentElement as HTMLElement | null;
+    }
+    return el;
+  };
+
+  const handleToggleShowAll = () => {
+    const container = getScrollableAncestor(sectionRef.current);
+    if (container) {
+      prevScrollTopRef.current = container.scrollTop;
+      prevScrollElementRef.current = container;
+    }
+    setShowAll(s => !s);
+  };
+
+  // Restore scroll position after toggle to avoid jumping
+  useEffect(() => {
+    if (prevScrollElementRef.current && prevScrollTopRef.current != null) {
+      const elem = prevScrollElementRef.current;
+      const top = prevScrollTopRef.current;
+      requestAnimationFrame(() => {
+        try { elem.scrollTop = top; } catch {};
+        prevScrollTopRef.current = null;
+        prevScrollElementRef.current = null;
+      });
+    }
+  }, [showAll]);
 
   // Deduplicate sources by filename
   const uniqueSources = sources ? Array.from(
     new Map(sources.map(src => [src.filename, src])).values()
   ) : [];
 
+  // Determine which indices to show to preserve original ordering
+  const visibleIndices = showAll
+    ? evidence.map((_, i) => i)
+    : evidence.length === 1
+      ? [0]
+      : [0, 1];
+
   return (
-    <div className="evidence-section">
+    <div className="evidence-section" ref={sectionRef}>
       <h3>Evidence ({evidence.length})</h3>
+      {malformed && !import.meta.env.DEV && (
+        <div className="evidence-malformed">Evidence payload malformed.</div>
+      )}
+      <div className="evidence-toggle-control">
+        {!showAll ? (
+          <button onClick={handleToggleShowAll}>Show all ({evidence.length})</button>
+        ) : (
+          <button onClick={handleToggleShowAll}>Show less</button>
+        )}
+      </div>
+
       <div className="evidence-list">
-        {evidence.map((ev, idx) => (
+        {visibleIndices.map((origIdx) => (
           <EvidenceItemComponent
-            key={idx}
-            evidence={ev}
-            index={idx}
+            key={origIdx}
+            evidence={evidence[origIdx]}
+            index={origIdx}
             query={query}
           />
         ))}

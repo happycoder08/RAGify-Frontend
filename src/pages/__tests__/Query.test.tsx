@@ -157,4 +157,61 @@ describe('Query SSE behavior', () => {
       expect(screen.getByText(/DEV ERROR: final.answer equals canonical refusal while refused=false/)).toBeInTheDocument()
     })
   })
+
+  test('copy answer + citations includes question, mode, sources, and all evidence', async () => {
+    const mockQuery = vi.fn((_request, handlers) => {
+      setTimeout(() => handlers.onFinal?.({
+        answer: 'Final answer body',
+        refused: false,
+        evidence: [
+          { chunk_id: 'c1', snippet: 'snippet one', heading: 'H1' },
+          { chunk_id: 'c2', snippet: 'snippet two' },
+        ],
+        sources: [
+          { filename: 'doc-one.txt' },
+          { filename: 'doc-two.txt' },
+        ],
+      }), 10)
+      return { abort: () => {}, done: Promise.resolve() }
+    })
+
+    // @ts-ignore
+    vi.spyOn(sse, 'queryWithSSE').mockImplementation(mockQuery)
+
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    // @ts-ignore
+    navigator.clipboard = { writeText }
+
+    render(
+      <MemoryRouter>
+        <Query />
+      </MemoryRouter>
+    )
+
+    const textarea = screen.getByPlaceholderText(/What is the company vacation policy/i)
+    await userEvent.type(textarea, 'What is the company vacation policy?')
+    const ask = screen.getByRole('button', { name: /Ask|Asking/i })
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(screen.getByText('Final answer body')).toBeInTheDocument()
+    })
+
+    const copyButton = screen.getByRole('button', { name: 'Copy answer + citations' })
+    await userEvent.click(copyButton)
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const copied = writeText.mock.calls[0][0] as string
+
+    expect(copied).toContain('Question: What is the company vacation policy?')
+    expect(copied).toMatch(/Answer Mode: (EXTRACTED|CITED|NOT FOUND)/)
+    expect(copied).toContain('Answer: Final answer body')
+    expect(copied).toContain('Sources:')
+    expect(copied).toContain('doc-one.txt')
+    expect(copied).toContain('doc-two.txt')
+    expect(copied).toContain('[1] H1 (chunk_id=c1)')
+    expect(copied).toContain('snippet one')
+    expect(copied).toContain('[2] Evidence 2 (chunk_id=c2)')
+    expect(copied).toContain('snippet two')
+  })
 })
