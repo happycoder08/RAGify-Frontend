@@ -17,12 +17,79 @@ vi.mock('../../api')
 // Enable dev tools for tests
 ;(globalThis as any).__TEST_SHOW_DEVTOOLS__ = true
 
-import Query from '../Query'
+import Query, { buildDisambiguatedQuestion } from '../Query'
 
 describe('Query SSE behavior', () => {
   beforeEach(() => {
     // @ts-ignore
     api.listDocuments = vi.fn().mockResolvedValue({ documents: [] })
+  })
+
+  test('buildDisambiguatedQuestion appends option in parens', () => {
+    expect(buildDisambiguatedQuestion('Original Q', '2026')).toBe('Original Q (2026)')
+    expect(buildDisambiguatedQuestion('Who?', 'Me')).toBe('Who? (Me)')
+  })
+
+  test('includes conversation_id and capped history in /api/query request', async () => {
+    const mockQuery = vi.fn((request, handlers) => {
+      // Immediately complete with a long answer to populate history
+      handlers.onFinal?.({
+        answer: 'A'.repeat(1200),
+        refused: false,
+        evidence: [],
+        sources: [],
+      })
+      return { abort: () => {}, done: Promise.resolve() }
+    })
+
+    // @ts-ignore
+    vi.spyOn(sse, 'queryWithSSE').mockImplementation(mockQuery)
+
+    render(
+      <MemoryRouter>
+        <Query />
+      </MemoryRouter>
+    )
+
+    const textarea = screen.getByPlaceholderText(/What is the company vacation policy/i)
+    const ask = screen.getByRole('button', { name: /Ask|Asking/i })
+
+    // Use paste for instant update of long text to avoid timeout
+    const longQuestion = 'Q'.repeat(1200)
+    await userEvent.clear(textarea)
+    await userEvent.paste(longQuestion)
+    
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(mockQuery).toHaveBeenCalledTimes(1)
+    })
+
+    const firstRequest = mockQuery.mock.calls[0][0] as any
+    expect(firstRequest.conversation_id).toBeDefined()
+    expect(typeof firstRequest.conversation_id).toBe('number')
+    expect(firstRequest.question.length).toBeLessThanOrEqual(800)
+    expect(firstRequest.conversation_history ?? []).toHaveLength(0)
+
+    // Second query should carry forward capped history with same conversation_id
+    await userEvent.clear(textarea)
+    await userEvent.type(textarea, 'Second turn question')
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(mockQuery).toHaveBeenCalledTimes(2)
+    })
+
+    const secondRequest = mockQuery.mock.calls[1][0] as any
+    expect(secondRequest.conversation_id).toBe(firstRequest.conversation_id)
+    const history = secondRequest.conversation_history as Array<{ role: string; content: string }>
+    expect(Array.isArray(history)).toBe(true)
+    // One prior turn -> up to 2 messages (user + assistant)
+    expect(history.length).toBeGreaterThanOrEqual(1)
+    expect(history.length).toBeLessThanOrEqual(2)
+    for (const msg of history) {
+      expect(msg.content.length).toBeLessThanOrEqual(800)
+    }
   })
 
   test('final overwrites streamed tokens and refusal clears evidence', async () => {

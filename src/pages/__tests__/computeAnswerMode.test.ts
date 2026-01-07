@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeAnswerMode, labelForMode, tooltipForMode } from '../../utils/computeAnswerMode';
+import { computeAnswerMode, labelForMode, tooltipForMode, tooltipForModeWithContext } from '../../utils/computeAnswerMode';
 
 describe('computeAnswerMode', () => {
   it('returns NOT_FOUND when refused is true', () => {
@@ -31,5 +31,23 @@ describe('computeAnswerMode', () => {
     expect(mode).toBe('CITED');
     expect(labelForMode(mode)).toBe('CITED');
     expect(tooltipForMode(mode)).toBe('Answer supported by citations/evidence.');
+  });
+
+  it('returns NOT_FOUND when pipeline_marker is CLARIFICATION_REQUIRED', () => {
+    const mode = computeAnswerMode({ refused: false, pipeline_marker: 'CLARIFICATION_REQUIRED' });
+    expect(mode).toBe('NOT_FOUND');
+  });
+
+  it('tooltipForModeWithContext returns clarification message when needed', () => {
+    const msg = tooltipForModeWithContext('NOT_FOUND', { pipeline_marker: 'CLARIFICATION_REQUIRED' });
+    expect(msg).toBe('Needs clarification to answer accurately.');
+
+    const msg2 = tooltipForModeWithContext('NOT_FOUND', { needs_clarification: true });
+    expect(msg2).toBe('Needs clarification to answer accurately.');
+  });
+
+  it('tooltipForModeWithContext returns standard message when no clarification needed', () => {
+    const msg = tooltipForModeWithContext('NOT_FOUND', { pipeline_marker: 'OTHER' });
+    expect(msg).toBe('Model refused or no supported evidence.');
   });
 });

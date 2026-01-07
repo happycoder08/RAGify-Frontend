@@ -4,10 +4,41 @@ import { queryWithSSE } from '../sse';
 import { listDocuments } from '../api';
 import type { DebugInfo, DocumentRecord } from '../contracts/types';
 import { getSelectedDocIds } from '../utils/documentSelection';
-import { computeAnswerMode, labelForMode, tooltipForMode } from '../utils/computeAnswerMode';
+import { computeAnswerMode, labelForMode, tooltipForModeWithContext } from '../utils/computeAnswerMode';
 import EvidencePanel from './EvidencePanel';
 import DebugDrawer from './DebugDrawer';
 import './Query.css';
+
+type ConversationTurn = {
+  user: string;
+  assistant?: string;
+};
+
+const CONVERSATION_ID_KEY = 'ragify_conversation_id';
+const MAX_MESSAGE_CHARS = 800;
+
+function clampMessageContent(text: string): string {
+  if (!text) return '';
+  return text.length > MAX_MESSAGE_CHARS ? text.slice(0, MAX_MESSAGE_CHARS) : text;
+}
+
+function getOrCreateConversationId(): number {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return Date.now();
+  }
+
+  const existing = window.localStorage.getItem(CONVERSATION_ID_KEY);
+  if (existing) {
+    const parsed = Number(existing);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  const newId = Date.now() + Math.floor(Math.random() * 1000);
+  window.localStorage.setItem(CONVERSATION_ID_KEY, String(newId));
+  return newId;
+}
 
 type BuildCopyTextArgs = {
   lastQuery: string;
@@ -89,6 +120,10 @@ async function copyTextWithFallback(text: string): Promise<void> {
   }
 }
 
+export function buildDisambiguatedQuestion(originalQuestion: string, option: string): string {
+  return `${originalQuestion} (${option})`;
+}
+
 // Demo mode configuration from environment
 const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 const DEMO_MODE = isDemoMode;
@@ -129,6 +164,10 @@ export default function Query() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [rawResponse, setRawResponse] = useState<string>('');
   const [useSelectedDocs, setUseSelectedDocs] = useState(false);
+  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [conversationHistory, setConversationHistory] = useState<ConversationTurn[]>([]);
+  const [clarification, setClarification] = useState<{ question: string; options: string[] } | null>(null);
+  const [needsClarification, setNeedsClarification] = useState(false);
   
   const [copySuccess, setCopySuccess] = useState(false);
   const [hasFinal, setHasFinal] = useState(false);
@@ -165,10 +204,25 @@ export default function Query() {
 
     // Refresh selected doc IDs when page loads (in case changed on Docs page)
     setSelectedDocIds(getSelectedDocIds());
+
+    // Initialize or restore conversation id on first mount
+    const id = getOrCreateConversationId();
+    setConversationId(id);
   }, []);
 
   const executeQuery = (questionText: string) => {
     if (!questionText.trim()) return;
+
+    const ensuredConversationId = conversationId ?? getOrCreateConversationId();
+    if (conversationId == null) {
+      setConversationId(ensuredConversationId);
+    }
+
+    const trimmedQuestion = questionText.trim();
+    const cappedQuestion = clampMessageContent(trimmedQuestion);
+
+    // Capture snapshot of existing history for this request (exclude new question)
+    const historySnapshot = conversationHistory;
 
     setStreaming(true);
     setHasFinal(false);
@@ -180,14 +234,36 @@ export default function Query() {
     setRefused(false);
     setError(null);
     setRawResponse('');
-    setLastQuery(questionText.trim());
+    setLastQuery(trimmedQuestion);
+    setClarification(null);
+    setNeedsClarification(false);
+
+    // Update in-memory conversation history with new user turn (for future requests)
+    setConversationHistory(prev => {
+      const next = [...prev, { user: clampMessageContent(trimmedQuestion) }];
+      const overflow = Math.max(0, next.length - 8);
+      return overflow > 0 ? next.slice(overflow) : next;
+    });
+
+    const mappedHistory = historySnapshot.flatMap(turn => {
+      const messages: { role: 'user' | 'assistant'; content: string }[] = [];
+      if (turn.user) {
+        messages.push({ role: 'user', content: clampMessageContent(turn.user) });
+      }
+      if (turn.assistant) {
+        messages.push({ role: 'assistant', content: clampMessageContent(turn.assistant) });
+      }
+      return messages;
+    });
 
     const queryRequest = {
-      question: questionText.trim(),
+      question: cappedQuestion,
       mode: 'full' as const,
       top_k: 4,
       debug: debugDrawerOpen ? 2 : (SHOW_DEVTOOLS ? 1 : 0),
       stream: false,
+      conversation_id: ensuredConversationId,
+      ...(mappedHistory.length > 0 ? { conversation_history: mappedHistory } : {}),
       ...(useSelectedDocs && selectedDocIds.length > 0 ? { doc_ids: selectedDocIds } : {}),
     };
 
@@ -222,6 +298,43 @@ export default function Query() {
           setEvidence(data.evidence);
           setSources(data.sources);
           setDebugInfo(prev => data.debug_info ?? prev);
+
+          const nc = (data as any).needs_clarification === true;
+          setNeedsClarification(nc);
+          if (nc && (data as any).clarification) {
+            setClarification((data as any).clarification);
+          } else {
+            setClarification(null);
+          }
+
+          // Update conversation history with assistant response for most recent user turn
+          setConversationHistory(prev => {
+            if (prev.length === 0) {
+              const singleTurn: ConversationTurn = {
+                user: clampMessageContent(trimmedQuestion),
+                assistant: clampMessageContent(data.answer ?? ''),
+              };
+              return [singleTurn];
+            }
+
+            const updated = [...prev];
+            const lastTurn = updated[updated.length - 1];
+            if (lastTurn && !lastTurn.assistant) {
+              updated[updated.length - 1] = {
+                ...lastTurn,
+                assistant: clampMessageContent(data.answer ?? ''),
+              };
+            } else {
+              updated.push({
+                user: clampMessageContent(trimmedQuestion),
+                assistant: clampMessageContent(data.answer ?? ''),
+              });
+            }
+
+            const overflow = Math.max(0, updated.length - 8);
+            return overflow > 0 ? updated.slice(overflow) : updated;
+          });
+
           // capture pipeline_marker if present in response (defensive)
           try {
             setResponsePipelineMarker(((data as any).pipeline_marker as string) ?? null);
@@ -231,12 +344,24 @@ export default function Query() {
           setStreaming(false);
           abortRef.current = null;
 
-          // DEV validation: check invariants
-          if (!data.evidence || !data.sources || data.evidence.length === 0 || data.sources.length === 0) {
-            setDevInvariantMsg('DEV ERROR: final payload missing evidence or sources');
+          // DEV validation: check invariants (allow empty evidence/sources for CLARIFICATION_REQUIRED)
+          const pm = ((data as any).pipeline_marker as string) ?? null;
+          const needsClarification = Boolean((data as any).needs_clarification);
+
+          const allowEmptyEvidenceSources =
+            pm === 'CLARIFICATION_REQUIRED' || needsClarification;
+
+          if (!allowEmptyEvidenceSources) {
+            if (!data.evidence || !data.sources || data.evidence.length === 0 || data.sources.length === 0) {
+              setDevInvariantMsg('DEV ERROR: final payload missing evidence or sources');
+            } else {
+              setDevInvariantMsg(null);
+            }
           } else {
+            // In clarification mode, empty evidence/sources is expected
             setDevInvariantMsg(null);
           }
+
 
           // DEV validation: check for answer/evidence mismatch
           if (data.answer && data.evidence && data.evidence.length > 0) {
@@ -301,6 +426,8 @@ export default function Query() {
     setRefused(false);
     setError(null);
     setRawResponse('');
+    setClarification(null);
+    setNeedsClarification(false);
     if (abortRef.current) {
       abortRef.current();
       abortRef.current = null;
@@ -322,6 +449,28 @@ export default function Query() {
     setTimeout(() => executeQuery(demoQuestion), 100);
   };
 
+  const handleClarificationOption = (option: string) => {
+    if (!clarification) return;
+    
+    // Append assistant clarification question + user selection to history
+    setConversationHistory(prev => {
+      const updated = [...prev];
+      // Ensure the last turn has the clarification question as assistant response
+      // (It should already be there from onFinal, but we can be safe)
+      
+      // Add the user's selection as a new turn
+      // Note: executeQuery will add the *disambiguated* question as a new turn.
+      // If we want "User: <option>" in history, we might need to add it here.
+      // But executeQuery uses the question text for history.
+      // We'll rely on executeQuery adding the disambiguated question.
+      return updated;
+    });
+
+    const newQuestion = buildDisambiguatedQuestion(lastQuery, option);
+    setQuestion(newQuestion);
+    setTimeout(() => executeQuery(newQuestion), 100);
+  };
+
   // Get scope display text
   const getScopeText = () => {
     if (!useSelectedDocs) return 'All documents';
@@ -338,7 +487,10 @@ export default function Query() {
     debug_info: debugInfo,
   });
   const answerModeLabel = labelForMode(answerMode);
-  const answerModeTooltip = tooltipForMode(answerMode);
+  const answerModeTooltip = tooltipForModeWithContext(answerMode, {
+    pipeline_marker: responsePipelineMarker,
+    needs_clarification: needsClarification,
+  });
 
   return (
     <div className="query-page">
@@ -532,6 +684,34 @@ export default function Query() {
                 {answerText}
                 {streaming && <span className="cursor">▊</span>}
               </div>
+
+              {/* Clarification Options */}
+              {hasFinal && needsClarification && clarification && (
+                <div className="clarification-card" style={{ marginTop: 16, padding: 12, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
+                  <div className="clarification-question" style={{ fontWeight: 600, marginBottom: 8 }}>{clarification.question}</div>
+                  <div className="clarification-options" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {clarification.options.map((opt) => (
+                      <button
+                        key={opt}
+                        className="clarification-option-btn"
+                        onClick={() => handleClarificationOption(opt)}
+                        disabled={streaming}
+                        style={{
+                          padding: '6px 12px',
+                          background: 'white',
+                          border: '1px solid #0284c7',
+                          color: '#0284c7',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                          fontWeight: 500
+                        }}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <button
