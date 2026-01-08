@@ -478,7 +478,13 @@ export default function Query() {
     pipeline_marker: responsePipelineMarker ?? undefined,
     debug_info: debugInfo,
   });
-  const answerModeLabel = labelForMode(answerMode);
+  
+  // Determine display label - override for clarification
+  let answerModeLabel: string = labelForMode(answerMode);
+  if (needsClarification || responsePipelineMarker === 'CLARIFICATION_REQUIRED') {
+    answerModeLabel = 'CLARIFY';
+  }
+
   const answerModeTooltip = tooltipForModeWithContext(answerMode, {
     pipeline_marker: responsePipelineMarker,
     needs_clarification: needsClarification,

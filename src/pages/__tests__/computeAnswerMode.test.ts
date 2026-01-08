@@ -33,24 +33,24 @@ describe('computeAnswerMode', () => {
     expect(tooltipForMode(mode)).toBe('Answer supported by citations/evidence.');
   });
 
-  it('returns NOT_FOUND when pipeline_marker is CLARIFICATION_REQUIRED', () => {
+  it('returns CITED when pipeline_marker is CLARIFICATION_REQUIRED', () => {
     const mode = computeAnswerMode({ refused: false, pipeline_marker: 'CLARIFICATION_REQUIRED' });
-    expect(mode).toBe('NOT_FOUND');
+    expect(mode).toBe('CITED');
   });
 
-  it('returns NOT_FOUND when needs_clarification is true', () => {
+  it('returns CITED when needs_clarification is true', () => {
     const mode = computeAnswerMode({ refused: false, needs_clarification: true });
-    expect(mode).toBe('NOT_FOUND');
+    expect(mode).toBe('CITED');
   });
 
   it('tooltipForModeWithContext returns clarification message when needed', () => {
-    const msg = tooltipForModeWithContext('NOT_FOUND', { pipeline_marker: 'CLARIFICATION_REQUIRED' });
+    const msg = tooltipForModeWithContext('CITED', { pipeline_marker: 'CLARIFICATION_REQUIRED' });
     expect(msg).toBe('Needs clarification to answer accurately.');
 
-    const msg2 = tooltipForModeWithContext('NOT_FOUND', { needs_clarification: true });
+    const msg2 = tooltipForModeWithContext('CITED', { needs_clarification: true });
     expect(msg2).toBe('Needs clarification to answer accurately.');
 
-    const msg3 = tooltipForModeWithContext('NOT_FOUND', {
+    const msg3 = tooltipForModeWithContext('CITED', {
       debug_info: { pipeline_marker: 'CLARIFICATION_REQUIRED' },
     });
     expect(msg3).toBe('Needs clarification to answer accurately.');
