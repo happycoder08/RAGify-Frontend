@@ -38,12 +38,22 @@ describe('computeAnswerMode', () => {
     expect(mode).toBe('NOT_FOUND');
   });
 
+  it('returns NOT_FOUND when needs_clarification is true', () => {
+    const mode = computeAnswerMode({ refused: false, needs_clarification: true });
+    expect(mode).toBe('NOT_FOUND');
+  });
+
   it('tooltipForModeWithContext returns clarification message when needed', () => {
     const msg = tooltipForModeWithContext('NOT_FOUND', { pipeline_marker: 'CLARIFICATION_REQUIRED' });
     expect(msg).toBe('Needs clarification to answer accurately.');
 
     const msg2 = tooltipForModeWithContext('NOT_FOUND', { needs_clarification: true });
     expect(msg2).toBe('Needs clarification to answer accurately.');
+
+    const msg3 = tooltipForModeWithContext('NOT_FOUND', {
+      debug_info: { pipeline_marker: 'CLARIFICATION_REQUIRED' },
+    });
+    expect(msg3).toBe('Needs clarification to answer accurately.');
   });
 
   it('tooltipForModeWithContext returns standard message when no clarification needed', () => {

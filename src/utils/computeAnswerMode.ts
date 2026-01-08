@@ -49,11 +49,16 @@ export function tooltipForMode(mode: AnswerMode): string {
 
 export function tooltipForModeWithContext(
   mode: AnswerMode,
-  ctx: { needs_clarification?: boolean; pipeline_marker?: string | null }
+  ctx: { needs_clarification?: boolean; pipeline_marker?: string | null; debug_info?: any }
 ): string {
+  const debugMarker = ctx.debug_info?.pipeline_marker;
+  const debugNeedsClarification = ctx.debug_info?.needs_clarification === true;
   if (
     mode === 'NOT_FOUND' &&
-    (ctx.needs_clarification === true || ctx.pipeline_marker === 'CLARIFICATION_REQUIRED')
+    (ctx.needs_clarification === true ||
+      ctx.pipeline_marker === 'CLARIFICATION_REQUIRED' ||
+      debugMarker === 'CLARIFICATION_REQUIRED' ||
+      debugNeedsClarification)
   ) {
     return 'Needs clarification to answer accurately.';
   }
