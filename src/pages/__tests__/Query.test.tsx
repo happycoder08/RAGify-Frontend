@@ -26,8 +26,8 @@ describe('Query SSE behavior', () => {
   })
 
   test('buildDisambiguatedQuestion appends option in parens', () => {
-    expect(buildDisambiguatedQuestion('Original Q', '2026')).toBe('Original Q (2026)')
-    expect(buildDisambiguatedQuestion('Who?', 'Me')).toBe('Who? (Me)')
+    expect(buildDisambiguatedQuestion('Original Q', '2026')).toBe('Original Q (Policy year: 2026)')
+    expect(buildDisambiguatedQuestion('Who?', 'Me')).toBe('Who? (Policy year: Me)')
   })
 
   test('includes conversation_id and capped history in /api/query request', async () => {
@@ -163,6 +163,40 @@ describe('Query SSE behavior', () => {
     await waitFor(() => {
       expect(screen.getByText(/DEV ERROR: final payload missing evidence or sources/)).toBeInTheDocument()
     })
+  })
+
+  test('dev invariant clears for clarification responses with empty evidence/sources', async () => {
+    const mockQuery = vi.fn((_request, handlers) => {
+      setTimeout(() => handlers.onFinal?.({
+        answer: '',
+        refused: false,
+        evidence: [],
+        sources: [],
+        needs_clarification: true,
+        clarification: { type: 'policy_year', question: 'Which year?', options: ['2025'] },
+      }), 10)
+      return { abort: () => {}, done: Promise.resolve() }
+    })
+
+    // @ts-ignore
+    vi.spyOn(sse, 'queryWithSSE').mockImplementation(mockQuery)
+
+    render(
+      <MemoryRouter>
+        <Query />
+      </MemoryRouter>
+    )
+
+    const textarea = screen.getByPlaceholderText(/What is the company vacation policy/i)
+    await userEvent.type(textarea, 'Check clarification invariant')
+    const ask = screen.getByRole('button', { name: /Ask|Asking/i })
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(screen.getByText('Which year?')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByText(/DEV ERROR: final payload missing evidence or sources/)).not.toBeInTheDocument()
   })
 
   test('dev mismatch detected when answer time not in evidence', async () => {
