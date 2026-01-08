@@ -121,7 +121,7 @@ async function copyTextWithFallback(text: string): Promise<void> {
 }
 
 export function buildDisambiguatedQuestion(originalQuestion: string, option: string): string {
-  return `${originalQuestion} (${option})`;
+  return `${originalQuestion} (Policy year: ${option})`;
 }
 
 // Demo mode configuration from environment
@@ -166,7 +166,11 @@ export default function Query() {
   const [useSelectedDocs, setUseSelectedDocs] = useState(false);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [conversationHistory, setConversationHistory] = useState<ConversationTurn[]>([]);
-  const [clarification, setClarification] = useState<{ question: string; options: string[] } | null>(null);
+  const [clarification, setClarification] = useState<{
+    type?: string;
+    question?: string;
+    options?: string[];
+  } | null>(null);
   const [needsClarification, setNeedsClarification] = useState(false);
   
   const [copySuccess, setCopySuccess] = useState(false);
@@ -299,20 +303,25 @@ export default function Query() {
           setSources(data.sources);
           setDebugInfo(prev => data.debug_info ?? prev);
 
-          const nc = (data as any).needs_clarification === true;
-          setNeedsClarification(nc);
-          if (nc && (data as any).clarification) {
+          const isClarification =
+            (data as any).pipeline_marker === 'CLARIFICATION_REQUIRED' ||
+            (data as any).needs_clarification === true;
+          setNeedsClarification(isClarification);
+          if (isClarification && (data as any).clarification) {
             setClarification((data as any).clarification);
           } else {
             setClarification(null);
           }
+          const clarificationQuestion = (data as any).clarification?.question;
+          const assistantContent =
+            isClarification && clarificationQuestion ? clarificationQuestion : data.answer ?? '';
 
           // Update conversation history with assistant response for most recent user turn
           setConversationHistory(prev => {
             if (prev.length === 0) {
               const singleTurn: ConversationTurn = {
                 user: clampMessageContent(trimmedQuestion),
-                assistant: clampMessageContent(data.answer ?? ''),
+                assistant: clampMessageContent(assistantContent),
               };
               return [singleTurn];
             }
@@ -322,12 +331,12 @@ export default function Query() {
             if (lastTurn && !lastTurn.assistant) {
               updated[updated.length - 1] = {
                 ...lastTurn,
-                assistant: clampMessageContent(data.answer ?? ''),
+                assistant: clampMessageContent(assistantContent),
               };
             } else {
               updated.push({
                 user: clampMessageContent(trimmedQuestion),
-                assistant: clampMessageContent(data.answer ?? ''),
+                assistant: clampMessageContent(assistantContent),
               });
             }
 
@@ -346,10 +355,7 @@ export default function Query() {
 
           // DEV validation: check invariants (allow empty evidence/sources for CLARIFICATION_REQUIRED)
           const pm = ((data as any).pipeline_marker as string) ?? null;
-          const needsClarification = Boolean((data as any).needs_clarification);
-
-          const allowEmptyEvidenceSources =
-            pm === 'CLARIFICATION_REQUIRED' || needsClarification;
+          const allowEmptyEvidenceSources = isClarification;
 
           if (!allowEmptyEvidenceSources) {
             if (!data.evidence || !data.sources || data.evidence.length === 0 || data.sources.length === 0) {
@@ -450,22 +456,7 @@ export default function Query() {
   };
 
   const handleClarificationOption = (option: string) => {
-    if (!clarification) return;
-    
-    // Append assistant clarification question + user selection to history
-    setConversationHistory(prev => {
-      const updated = [...prev];
-      // Ensure the last turn has the clarification question as assistant response
-      // (It should already be there from onFinal, but we can be safe)
-      
-      // Add the user's selection as a new turn
-      // Note: executeQuery will add the *disambiguated* question as a new turn.
-      // If we want "User: <option>" in history, we might need to add it here.
-      // But executeQuery uses the question text for history.
-      // We'll rely on executeQuery adding the disambiguated question.
-      return updated;
-    });
-
+    if (!lastQuery) return;
     const newQuestion = buildDisambiguatedQuestion(lastQuery, option);
     setQuestion(newQuestion);
     setTimeout(() => executeQuery(newQuestion), 100);
@@ -483,6 +474,7 @@ export default function Query() {
   // Derived answer mode (null-safe)
   const answerMode = computeAnswerMode({
     refused,
+    needs_clarification: needsClarification,
     pipeline_marker: responsePipelineMarker ?? undefined,
     debug_info: debugInfo,
   });
@@ -490,6 +482,7 @@ export default function Query() {
   const answerModeTooltip = tooltipForModeWithContext(answerMode, {
     pipeline_marker: responsePipelineMarker,
     needs_clarification: needsClarification,
+    debug_info: debugInfo,
   });
 
   return (
@@ -636,7 +629,7 @@ export default function Query() {
         )}
 
         {/* Middle & Right: Answer and Evidence */}
-        {(streaming || answerText) && (
+        {(streaming || answerText || (hasFinal && needsClarification)) && (
           <div className="results-grid">
             {/* Middle: Answer Panel */}
             <div className="answer-panel">
@@ -686,30 +679,34 @@ export default function Query() {
               </div>
 
               {/* Clarification Options */}
-              {hasFinal && needsClarification && clarification && (
+              {hasFinal && needsClarification && clarification?.question && (
                 <div className="clarification-card" style={{ marginTop: 16, padding: 12, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
-                  <div className="clarification-question" style={{ fontWeight: 600, marginBottom: 8 }}>{clarification.question}</div>
-                  <div className="clarification-options" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {clarification.options.map((opt) => (
-                      <button
-                        key={opt}
-                        className="clarification-option-btn"
-                        onClick={() => handleClarificationOption(opt)}
-                        disabled={streaming}
-                        style={{
-                          padding: '6px 12px',
-                          background: 'white',
-                          border: '1px solid #0284c7',
-                          color: '#0284c7',
-                          borderRadius: 4,
-                          cursor: 'pointer',
-                          fontWeight: 500
-                        }}
-                      >
-                        {opt}
-                      </button>
-                    ))}
+                  <div className="clarification-question" style={{ fontWeight: 600, marginBottom: 8 }}>
+                    {clarification.question}
                   </div>
+                  {Array.isArray(clarification.options) && clarification.options.length > 0 && (
+                    <div className="clarification-options" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {clarification.options.map((opt) => (
+                        <button
+                          key={opt}
+                          className="clarification-option-btn"
+                          onClick={() => handleClarificationOption(opt)}
+                          disabled={streaming}
+                          style={{
+                            padding: '6px 12px',
+                            background: 'white',
+                            border: '1px solid #0284c7',
+                            color: '#0284c7',
+                            borderRadius: 4,
+                            cursor: 'pointer',
+                            fontWeight: 500
+                          }}
+                        >
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
