@@ -475,6 +475,7 @@ export default function Query() {
   // Derived answer mode (null-safe)
   const answerMode = computeAnswerMode({
     refused,
+    needs_clarification: needsClarification,
     pipeline_marker: responsePipelineMarker ?? undefined,
     debug_info: debugInfo,
   });
