@@ -2,19 +2,11 @@ export type AnswerMode = 'NOT_FOUND' | 'EXTRACTED' | 'CITED';
 
 export function computeAnswerMode(input: {
   refused: boolean;
-  needs_clarification?: boolean;
   pipeline_marker?: string | null;
   debug_info?: any;
 }): AnswerMode {
   if (input.refused === true) return 'NOT_FOUND';
-  
-  // NOTE: Clarification state is technically "found" enough to have options,
-  // so we treat it as CITED (or whatever default) instead of NOT_FOUND,
-  // preventing misleading "NOT FOUND" badges.
-  if (input.needs_clarification === true) return 'CITED';
   const pm = input.pipeline_marker;
-  if (pm === 'CLARIFICATION_REQUIRED') return 'CITED';
-  if (input.debug_info?.pipeline_marker === 'CLARIFICATION_REQUIRED') return 'CITED';
 
   if (typeof pm === 'string' && pm.startsWith('EXTRACTOR_')) return 'EXTRACTED';
 
@@ -55,10 +47,11 @@ export function tooltipForModeWithContext(
   const debugMarker = ctx.debug_info?.pipeline_marker;
   const debugNeedsClarification = ctx.debug_info?.needs_clarification === true;
   if (
-    ctx.needs_clarification === true ||
-    ctx.pipeline_marker === 'CLARIFICATION_REQUIRED' ||
-    debugMarker === 'CLARIFICATION_REQUIRED' ||
-    debugNeedsClarification
+    mode === 'NOT_FOUND' &&
+    (ctx.needs_clarification === true ||
+      ctx.pipeline_marker === 'CLARIFICATION_REQUIRED' ||
+      debugMarker === 'CLARIFICATION_REQUIRED' ||
+      debugNeedsClarification)
   ) {
     return 'Needs clarification to answer accurately.';
   }

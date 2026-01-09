@@ -33,16 +33,6 @@ describe('computeAnswerMode', () => {
     expect(tooltipForMode(mode)).toBe('Answer supported by citations/evidence.');
   });
 
-  it('returns CITED when pipeline_marker is CLARIFICATION_REQUIRED', () => {
-    const mode = computeAnswerMode({ refused: false, pipeline_marker: 'CLARIFICATION_REQUIRED' });
-    expect(mode).toBe('CITED');
-  });
-
-  it('returns CITED when needs_clarification is true', () => {
-    const mode = computeAnswerMode({ refused: false, needs_clarification: true });
-    expect(mode).toBe('CITED');
-  });
-
   it('tooltipForModeWithContext returns clarification message when needed', () => {
     const msg = tooltipForModeWithContext('CITED', { pipeline_marker: 'CLARIFICATION_REQUIRED' });
     expect(msg).toBe('Needs clarification to answer accurately.');
@@ -50,7 +40,7 @@ describe('computeAnswerMode', () => {
     const msg2 = tooltipForModeWithContext('CITED', { needs_clarification: true });
     expect(msg2).toBe('Needs clarification to answer accurately.');
 
-    const msg3 = tooltipForModeWithContext('CITED', {
+    const msg3 = tooltipForModeWithContext('NOT_FOUND', {
       debug_info: { pipeline_marker: 'CLARIFICATION_REQUIRED' },
     });
     expect(msg3).toBe('Needs clarification to answer accurately.');

@@ -299,22 +299,20 @@ export default function Query() {
           setRawResponse(JSON.stringify(data, null, 2));
           setRefused(data.refused);
           setAnswerText(data.answer);
-          setEvidence(data.evidence);
-          setSources(data.sources);
+          setEvidence(Array.isArray(data.evidence) ? data.evidence : []);
+          setSources(Array.isArray(data.sources) ? data.sources : []);
           setDebugInfo(prev => data.debug_info ?? prev);
 
-          const isClarification =
-            (data as any).pipeline_marker === 'CLARIFICATION_REQUIRED' ||
-            (data as any).needs_clarification === true;
-          setNeedsClarification(isClarification);
-          if (isClarification && (data as any).clarification) {
+          const needsClarificationResponse = (data as any).needs_clarification === true;
+          setNeedsClarification(needsClarificationResponse);
+          if (needsClarificationResponse && (data as any).clarification) {
             setClarification((data as any).clarification);
           } else {
             setClarification(null);
           }
           const clarificationQuestion = (data as any).clarification?.question;
           const assistantContent =
-            isClarification && clarificationQuestion ? clarificationQuestion : data.answer ?? '';
+            needsClarificationResponse && clarificationQuestion ? clarificationQuestion : data.answer ?? '';
 
           // Update conversation history with assistant response for most recent user turn
           setConversationHistory(prev => {
@@ -353,9 +351,12 @@ export default function Query() {
           setStreaming(false);
           abortRef.current = null;
 
-          // DEV validation: check invariants (allow empty evidence/sources for CLARIFICATION_REQUIRED)
+          // DEV validation: check invariants (allow empty evidence/sources for refusals/clarifications)
           const pm = ((data as any).pipeline_marker as string) ?? null;
-          const allowEmptyEvidenceSources = isClarification;
+          const allowEmptyEvidenceSources =
+            data.refused === true ||
+            pm === 'CLARIFICATION_REQUIRED' ||
+            (data as any).needs_clarification === true;
 
           if (!allowEmptyEvidenceSources) {
             if (!data.evidence || !data.sources || data.evidence.length === 0 || data.sources.length === 0) {
@@ -364,7 +365,7 @@ export default function Query() {
               setDevInvariantMsg(null);
             }
           } else {
-            // In clarification mode, empty evidence/sources is expected
+            // In refusal/clarification mode, empty evidence/sources is expected
             setDevInvariantMsg(null);
           }
 
@@ -478,18 +479,14 @@ export default function Query() {
     pipeline_marker: responsePipelineMarker ?? undefined,
     debug_info: debugInfo,
   });
-  
-  // Determine display label - override for clarification
-  let answerModeLabel: string = labelForMode(answerMode);
-  if (needsClarification || responsePipelineMarker === 'CLARIFICATION_REQUIRED') {
-    answerModeLabel = 'CLARIFY';
-  }
-
-  const answerModeTooltip = tooltipForModeWithContext(answerMode, {
-    pipeline_marker: responsePipelineMarker,
-    needs_clarification: needsClarification,
-    debug_info: debugInfo,
-  });
+  const answerModeLabel = needsClarification ? 'CLARIFY' : labelForMode(answerMode);
+  const answerModeTooltip = needsClarification
+    ? 'Needs clarification to answer accurately.'
+    : tooltipForModeWithContext(answerMode, {
+        pipeline_marker: responsePipelineMarker,
+        needs_clarification: needsClarification,
+        debug_info: debugInfo,
+      });
 
   return (
     <div className="query-page">
@@ -753,7 +750,7 @@ export default function Query() {
             </div>
 
             {/* Right/Below: Evidence Panel (render only after final) */}
-            {hasFinal && !refused && evidence && (
+            {hasFinal && !refused && (
               <div className="evidence-panel-container">
                 {evidence.length > 0 && evidence[0].anchor_type && (
                   <div className="anchor-type-banner">
