@@ -31,7 +31,22 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || '';
  * Get stored JWT token from localStorage
  */
 function getToken(): string | null {
-  return localStorage.getItem('ragify_jwt');
+  const token = localStorage.getItem('ragify_jwt');
+  if (!token) return null;
+
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(atob(parts[1]));
+      if (payload.exp && payload.exp * 1000 < Date.now()) {
+        localStorage.removeItem('ragify_jwt');
+        return null;
+      }
+    }
+  } catch (e) {
+    // ignore parse errors, let backend handle invalid tokens
+  }
+  return token;
 }
 
 /**

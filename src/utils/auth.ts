@@ -23,7 +23,21 @@ export function decodeToken(token: string): JWTPayload | null {
     const payload = JSON.parse(atob(parts[1]));
     
     // Check expiration
-    if (payload.exp && payload.exp * 1000 < Date.now()) {
+    const now = Date.now();
+    const expMs = (payload.exp || 0) * 1000;
+    const isExpired = !!payload.exp && expMs < now;
+
+    if (import.meta.env.DEV) {
+      console.log('[Auth Check]', {
+        tokenPresent: true,
+        source: TOKEN_KEY,
+        exp: payload.exp,
+        now: Math.floor(now / 1000),
+        expired: isExpired
+      });
+    }
+
+    if (isExpired) {
       return null; // Token expired
     }
     
@@ -60,10 +74,17 @@ export function clearToken(): void {
  */
 export function isLoggedIn(): boolean {
   const token = getToken();
-  if (!token) return false;
+  if (!token) {
+    if (import.meta.env.DEV) console.log('[Auth Check] No token found in', TOKEN_KEY);
+    return false;
+  }
   
   const payload = decodeToken(token);
-  return payload !== null;
+  if (payload === null) {
+    clearToken(); // Auto-clear if expired/invalid
+    return false;
+  }
+  return true;
 }
 
 /**
