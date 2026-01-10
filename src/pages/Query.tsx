@@ -121,7 +121,51 @@ async function copyTextWithFallback(text: string): Promise<void> {
 }
 
 export function buildDisambiguatedQuestion(originalQuestion: string, option: string): string {
-  return `${originalQuestion} (Policy year: ${option})`;
+  return `${originalQuestion} (${option})`;
+}
+
+function formatClarificationType(type?: string): string | null {
+  if (!type) return null;
+  return type.replace(/_/g, ' ').trim();
+}
+
+type ClarificationData = {
+  type?: string;
+  question?: string;
+  options?: string[];
+};
+
+type ClarificationCardProps = {
+  clarification: ClarificationData;
+  onSelect: (option: string) => void;
+  disabled: boolean;
+};
+
+function ClarificationCard({ clarification, onSelect, disabled }: ClarificationCardProps) {
+  const typeLabel = formatClarificationType(clarification.type);
+  return (
+    <div className="clarification-card">
+      <div className="clarification-question">
+        {clarification.question}
+        {typeLabel && <span className="clarification-type">({typeLabel})</span>}
+      </div>
+      {Array.isArray(clarification.options) && clarification.options.length > 0 && (
+        <div className="clarification-options">
+          {clarification.options.map((opt) => (
+            <button
+              key={opt}
+              className="clarification-option-btn"
+              onClick={() => onSelect(opt)}
+              disabled={disabled}
+              type="button"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Demo mode configuration from environment
@@ -157,6 +201,7 @@ export default function Query() {
   // Dev-only diagnostic banners
   const [devInvariantMsg, setDevInvariantMsg] = useState<string | null>(null);
   const [devMismatchMsg, setDevMismatchMsg] = useState<string | null>(null);
+  const [devSuccessMsg, setDevSuccessMsg] = useState<string | null>(null);
   const [hasPendingDocs, setHasPendingDocs] = useState(false);
   const [debugDrawerOpen, setDebugDrawerOpen] = useState(false);
   const [lastQuery, setLastQuery] = useState<string>('');
@@ -166,17 +211,14 @@ export default function Query() {
   const [useSelectedDocs, setUseSelectedDocs] = useState(false);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [conversationHistory, setConversationHistory] = useState<ConversationTurn[]>([]);
-  const [clarification, setClarification] = useState<{
-    type?: string;
-    question?: string;
-    options?: string[];
-  } | null>(null);
+  const [clarification, setClarification] = useState<ClarificationData | null>(null);
   const [needsClarification, setNeedsClarification] = useState(false);
   
   const [copySuccess, setCopySuccess] = useState(false);
   const [hasFinal, setHasFinal] = useState(false);
   const [responsePipelineMarker, setResponsePipelineMarker] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+  const lastDebugLevelRef = useRef(0);
 
   // Readiness check: fetch documents on mount and check for pending status
   useEffect(() => {
@@ -260,11 +302,13 @@ export default function Query() {
       return messages;
     });
 
+    const debugLevel = debugDrawerOpen ? 2 : (SHOW_DEVTOOLS ? 1 : 0);
+    lastDebugLevelRef.current = debugLevel;
     const queryRequest = {
       question: cappedQuestion,
       mode: 'full' as const,
       top_k: 4,
-      debug: debugDrawerOpen ? 2 : (SHOW_DEVTOOLS ? 1 : 0),
+      debug: debugLevel,
       stream: false,
       conversation_id: ensuredConversationId,
       ...(mappedHistory.length > 0 ? { conversation_history: mappedHistory } : {}),
@@ -303,9 +347,13 @@ export default function Query() {
           setSources(data.sources);
           setDebugInfo(prev => data.debug_info ?? prev);
 
+          const debugPm = (data as any).debug_info?.pipeline_marker;
+          const debugNeedsClarification = (data as any).debug_info?.needs_clarification === true;
           const isClarification =
             (data as any).pipeline_marker === 'CLARIFICATION_REQUIRED' ||
-            (data as any).needs_clarification === true;
+            (data as any).needs_clarification === true ||
+            debugPm === 'CLARIFICATION_REQUIRED' ||
+            debugNeedsClarification;
           setNeedsClarification(isClarification);
           if (isClarification && (data as any).clarification) {
             setClarification((data as any).clarification);
@@ -356,18 +404,29 @@ export default function Query() {
           // DEV validation: check invariants (allow empty evidence/sources for CLARIFICATION_REQUIRED)
           const pm = ((data as any).pipeline_marker as string) ?? null;
           const allowEmptyEvidenceSources = isClarification;
+          let nextDevInvariantMsg: string | null = null;
+          let nextDevSuccessMsg: string | null = null;
 
           if (!allowEmptyEvidenceSources) {
             if (!data.evidence || !data.sources || data.evidence.length === 0 || data.sources.length === 0) {
-              setDevInvariantMsg('DEV ERROR: final payload missing evidence or sources');
-            } else {
-              setDevInvariantMsg(null);
+              nextDevInvariantMsg = 'DEV ERROR: final payload missing evidence or sources';
             }
-          } else {
-            // In clarification mode, empty evidence/sources is expected
-            setDevInvariantMsg(null);
           }
 
+          if (!nextDevInvariantMsg && SHOW_DEVTOOLS && !DEMO_MODE && pm === 'LLM_VALIDATED') {
+            const evidenceText = (data.evidence || [])
+              .map(ev => (ev && ev.snippet ? String(ev.snippet) : ''))
+              .join(' ');
+            const evidenceHasInteger = /\b\d+\b/.test(evidenceText);
+            const answerHasInteger = /\b\d+\b/.test(String(data.answer ?? ''));
+            if (evidenceHasInteger && !answerHasInteger) {
+              nextDevInvariantMsg = 'Validated answer missing numeric evidence';
+            }
+          }
+
+          if (SHOW_DEVTOOLS && !DEMO_MODE && pm === 'EXTRACTOR_FALLBACK' && lastDebugLevelRef.current > 0) {
+            nextDevSuccessMsg = '🛡️ Hallucination prevented: Fallback to strict extraction.';
+          }
 
           // DEV validation: check for answer/evidence mismatch
           if (data.answer && data.evidence && data.evidence.length > 0) {
@@ -388,9 +447,11 @@ export default function Query() {
           // DEV validation: check canonical refusal
           const canonicalRefusal = 'The document does not specify this.';
           if (!data.refused && data.answer === canonicalRefusal) {
-            setDevInvariantMsg('DEV ERROR: final.answer equals canonical refusal while refused=false');
+            nextDevInvariantMsg = 'DEV ERROR: final.answer equals canonical refusal while refused=false';
           }
 
+          setDevInvariantMsg(nextDevInvariantMsg);
+          setDevSuccessMsg(nextDevSuccessMsg);
           setHasFinal(true);
         },
         // Rule 4: On 'error': show error state and stop.
@@ -420,6 +481,7 @@ export default function Query() {
     answerBufferRef.current = '';
     setDevInvariantMsg(null);
     setDevMismatchMsg(null);
+    setDevSuccessMsg(null);
   };
 
   const handleClear = () => {
@@ -441,6 +503,7 @@ export default function Query() {
     setStreaming(false);
     setDevInvariantMsg(null);
     setDevMismatchMsg(null);
+    setDevSuccessMsg(null);
     setHasFinal(false);
   };
 
@@ -457,7 +520,10 @@ export default function Query() {
 
   const handleClarificationOption = (option: string) => {
     if (!lastQuery) return;
-    const newQuestion = buildDisambiguatedQuestion(lastQuery, option);
+    const typeLabel = formatClarificationType(clarification?.type);
+    const newQuestion = typeLabel
+      ? `${lastQuery} (${typeLabel}: ${option})`
+      : buildDisambiguatedQuestion(lastQuery, option);
     setQuestion(newQuestion);
     setTimeout(() => executeQuery(newQuestion), 100);
   };
@@ -479,11 +545,7 @@ export default function Query() {
     debug_info: debugInfo,
   });
   
-  // Determine display label - override for clarification
-  let answerModeLabel: string = labelForMode(answerMode);
-  if (needsClarification || responsePipelineMarker === 'CLARIFICATION_REQUIRED') {
-    answerModeLabel = 'CLARIFY';
-  }
+  const answerModeLabel: string = labelForMode(answerMode);
 
   const answerModeTooltip = tooltipForModeWithContext(answerMode, {
     pipeline_marker: responsePipelineMarker,
@@ -678,6 +740,11 @@ export default function Query() {
                   <strong>{devMismatchMsg}</strong>
                 </div>
               )}
+              {SHOW_DEVTOOLS && !DEMO_MODE && devSuccessMsg && (
+                <div className="dev-success-banner" style={{ background: '#e6ffed', padding: 8, marginBottom: 8, borderRadius: 6 }}>
+                  <strong>{devSuccessMsg}</strong>
+                </div>
+              )}
 
               <div className="answer-content">
                 {answerText}
@@ -686,34 +753,11 @@ export default function Query() {
 
               {/* Clarification Options */}
               {hasFinal && needsClarification && clarification?.question && (
-                <div className="clarification-card" style={{ marginTop: 16, padding: 12, background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
-                  <div className="clarification-question" style={{ fontWeight: 600, marginBottom: 8 }}>
-                    {clarification.question}
-                  </div>
-                  {Array.isArray(clarification.options) && clarification.options.length > 0 && (
-                    <div className="clarification-options" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      {clarification.options.map((opt) => (
-                        <button
-                          key={opt}
-                          className="clarification-option-btn"
-                          onClick={() => handleClarificationOption(opt)}
-                          disabled={streaming}
-                          style={{
-                            padding: '6px 12px',
-                            background: 'white',
-                            border: '1px solid #0284c7',
-                            color: '#0284c7',
-                            borderRadius: 4,
-                            cursor: 'pointer',
-                            fontWeight: 500
-                          }}
-                        >
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <ClarificationCard
+                  clarification={clarification}
+                  onSelect={handleClarificationOption}
+                  disabled={streaming}
+                />
               )}
 
               <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>

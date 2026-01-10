@@ -16,6 +16,12 @@ describe('computeAnswerMode', () => {
     expect(tooltipForMode(mode)).toBe('Answer synthesized from extracted evidence.');
   });
 
+  it('returns EXTRACTED for specific extractor overrides', () => {
+    expect(computeAnswerMode({ refused: false, pipeline_marker: 'EXTRACTOR_FACT_SINGLE' })).toBe('EXTRACTED');
+    expect(computeAnswerMode({ refused: false, pipeline_marker: 'EXTRACTOR_EVIDENCE_FALLBACK' })).toBe('EXTRACTED');
+    expect(computeAnswerMode({ refused: false, pipeline_marker: 'EXTRACTOR_FALLBACK' })).toBe('EXTRACTED');
+  });
+
   it('returns EXTRACTED when debug_info.pipeline_marker indicates extractor', () => {
     const mode = computeAnswerMode({ refused: false, debug_info: { pipeline_marker: 'EXTRACTOR_ABC' } });
     expect(mode).toBe('EXTRACTED');
@@ -33,14 +39,21 @@ describe('computeAnswerMode', () => {
     expect(tooltipForMode(mode)).toBe('Answer supported by citations/evidence.');
   });
 
-  it('returns CITED when pipeline_marker is CLARIFICATION_REQUIRED', () => {
+  it('returns CLARIFICATION when pipeline_marker is CLARIFICATION_REQUIRED', () => {
     const mode = computeAnswerMode({ refused: false, pipeline_marker: 'CLARIFICATION_REQUIRED' });
-    expect(mode).toBe('CITED');
+    expect(mode).toBe('CLARIFICATION');
+    expect(labelForMode(mode)).toBe('CLARIFY');
+    expect(tooltipForMode(mode)).toBe('Needs clarification to answer accurately.');
   });
 
-  it('returns CITED when needs_clarification is true', () => {
+  it('returns CLARIFICATION when debug_info.pipeline_marker is CLARIFICATION_REQUIRED', () => {
+    const mode = computeAnswerMode({ refused: false, debug_info: { pipeline_marker: 'CLARIFICATION_REQUIRED' } });
+    expect(mode).toBe('CLARIFICATION');
+  });
+
+  it('returns CLARIFICATION when needs_clarification is true', () => {
     const mode = computeAnswerMode({ refused: false, needs_clarification: true });
-    expect(mode).toBe('CITED');
+    expect(mode).toBe('CLARIFICATION');
   });
 
   it('tooltipForModeWithContext returns clarification message when needed', () => {

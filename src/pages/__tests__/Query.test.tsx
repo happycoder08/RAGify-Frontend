@@ -165,6 +165,66 @@ describe('Query SSE behavior', () => {
     })
   })
 
+  test('clarification response skips dev invariant and follow-up renders answer', async () => {
+    let callCount = 0
+    const mockQuery = vi.fn((request, handlers) => {
+      callCount += 1
+      if (callCount === 1) {
+        setTimeout(() => handlers.onFinal?.({
+          answer: '',
+          refused: false,
+          evidence: [],
+          sources: [],
+          needs_clarification: true,
+          pipeline_marker: 'CLARIFICATION_REQUIRED',
+          clarification: {
+            type: 'policy_year',
+            question: 'Which policy year?',
+            options: ['2025', '2026']
+          }
+        }), 10)
+      } else {
+        setTimeout(() => handlers.onFinal?.({
+          answer: 'Final answer for 2025',
+          refused: false,
+          evidence: [{ chunk_id: 'c1', snippet: 'Policy for 2025', heading: 'Policy' }],
+          sources: [{ filename: 'policy.pdf' }]
+        }), 10)
+      }
+      return { abort: () => {}, done: Promise.resolve() }
+    })
+
+    // @ts-ignore
+    vi.spyOn(sse, 'queryWithSSE').mockImplementation(mockQuery)
+
+    render(
+      <MemoryRouter>
+        <Query />
+      </MemoryRouter>
+    )
+
+    const textarea = screen.getByPlaceholderText(/What is the company vacation policy/i)
+    await userEvent.type(textarea, 'What is the policy year?')
+    const ask = screen.getByRole('button', { name: /Ask|Asking/i })
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(screen.getByText('Which policy year?')).toBeInTheDocument()
+    })
+
+    expect(screen.queryByText(/DEV ERROR: final payload missing evidence or sources/)).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '2025' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Final answer for 2025')).toBeInTheDocument()
+    })
+
+    expect(mockQuery).toHaveBeenCalledTimes(2)
+    const followupRequest = mockQuery.mock.calls[1][0] as any
+    expect(followupRequest.question).toBe('What is the policy year? (policy year: 2025)')
+  })
+
   test('dev mismatch detected when answer time not in evidence', async () => {
     const mockQuery = vi.fn((_request, handlers) => {
       setTimeout(() => handlers.onFinal?.({
@@ -192,6 +252,68 @@ describe('Query SSE behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Answer/Evidence mismatch')).toBeInTheDocument()
+    })
+  })
+
+  test('dev warning when LLM_VALIDATED has numeric evidence but no numeric answer', async () => {
+    const mockQuery = vi.fn((_request, handlers) => {
+      setTimeout(() => handlers.onFinal?.({
+        answer: 'No numbers here',
+        refused: false,
+        pipeline_marker: 'LLM_VALIDATED',
+        evidence: [{ chunk_id: 'c1', snippet: 'The total is 42 items.' }],
+        sources: [{ filename: 'doc.txt' }],
+      }), 10)
+      return { abort: () => {}, done: Promise.resolve() }
+    })
+
+    // @ts-ignore
+    vi.spyOn(sse, 'queryWithSSE').mockImplementation(mockQuery)
+
+    render(
+      <MemoryRouter>
+        <Query />
+      </MemoryRouter>
+    )
+
+    const textarea = screen.getByPlaceholderText(/What is the company vacation policy/i)
+    await userEvent.type(textarea, 'Check numeric invariant')
+    const ask = screen.getByRole('button', { name: /Ask|Asking/i })
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(screen.getByText('Validated answer missing numeric evidence')).toBeInTheDocument()
+    })
+  })
+
+  test('dev success banner when EXTRACTOR_FALLBACK is used', async () => {
+    const mockQuery = vi.fn((_request, handlers) => {
+      setTimeout(() => handlers.onFinal?.({
+        answer: 'Fallback extracted answer',
+        refused: false,
+        pipeline_marker: 'EXTRACTOR_FALLBACK',
+        evidence: [{ chunk_id: 'c1', snippet: 'Strict extraction used' }],
+        sources: [{ filename: 'doc.txt' }],
+      }), 10)
+      return { abort: () => {}, done: Promise.resolve() }
+    })
+
+    // @ts-ignore
+    vi.spyOn(sse, 'queryWithSSE').mockImplementation(mockQuery)
+
+    render(
+      <MemoryRouter>
+        <Query />
+      </MemoryRouter>
+    )
+
+    const textarea = screen.getByPlaceholderText(/What is the company vacation policy/i)
+    await userEvent.type(textarea, 'Check fallback')
+    const ask = screen.getByRole('button', { name: /Ask|Asking/i })
+    await userEvent.click(ask)
+
+    await waitFor(() => {
+      expect(screen.getByText('🛡️ Hallucination prevented: Fallback to strict extraction.')).toBeInTheDocument()
     })
   })
 
@@ -271,7 +393,7 @@ describe('Query SSE behavior', () => {
     const copied = writeText.mock.calls[0][0] as string
 
     expect(copied).toContain('Question: What is the company vacation policy?')
-    expect(copied).toMatch(/Answer Mode: (EXTRACTED|CITED|NOT FOUND)/)
+    expect(copied).toMatch(/Answer Mode: (EXTRACTED|CITED|NOT FOUND|CLARIFY)/)
     expect(copied).toContain('Answer: Final answer body')
     expect(copied).toContain('Sources:')
     expect(copied).toContain('doc-one.txt')
